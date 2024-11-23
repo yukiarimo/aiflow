@@ -1,1 +1,6 @@
-include helloworld/images/hello.gif
+include README.md
+include LICENSE
+CODE_OF_CONDUCT.md
+requirements.txt
+SECURITY.md
+aiflow/*
