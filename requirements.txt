@@ -3,7 +3,7 @@ huggingface-hub==0.20.1
 Pillow==10.3.0
 torch==2.1.2
 torchvision==0.16.2
-transformers==4.36.2
+transformers==4.38.0
 einops==0.7.0
 gradio==5.5.0
 timm==0.9.12
