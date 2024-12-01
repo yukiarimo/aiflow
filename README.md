@@ -5,5 +5,5 @@ Welcome to the AiFlow project! AiFlow is a platform that bridges the gap between
 To install AiFlow, run the following commans:
 ```bash
 python setup.py sdist bdist_wheel
-pip install dist/aiflow-7.0.1-py3-none-any.whl
+pip install dist/aiflow-7.0.1-py3-none-any.whl --force-reinstall
 ```

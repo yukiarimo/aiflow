@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import re
+import uuid
 import torch
 import requests
 import soundfile as sf
@@ -284,30 +286,45 @@ class AGIWorker:
                     verbose=False
                 )
 
-    def transcribe_audio(self, audio_file):
-        return self.yunaListen(audio_file, chunk_length_s=30, batch_size=40, return_timestamps=False)['text']
+    def transcribe_audio(self, audio_file): return self.yunaListen(audio_file, chunk_length_s=30, batch_size=60, return_timestamps=False)['text']
 
-    def speak_text(self, text, reference_audio=None, mode=None):
+    def speak_text(self, text, project=None, chapter=None, paragraph=None, mode=None, reference_audio=None, output_filename="audio.mp3"):
         reference_audio = reference_audio or self.config['server']['yuna_reference_audio']
         mode = mode or self.config['server']['yuna_audio_mode']
 
-        def export_audio(input_file):
+        def export_audio(input_file, output_filename):
             audio = AudioSegment.from_file(input_file)
-            audio.export("static/audio/audio.mp3", format="mp3")
+            audio.export(output_filename, format="mp3")
 
-        if mode == "siri":
-            os.system(f'say -o static/audio/audio.aiff {repr(text)}')
-            export_audio("static/audio/audio.aiff")
+        if mode == 'siri':
+            os.system(f'say -o temp.aiff {repr(text)}')
+            audio = AudioSegment.from_file("temp.aiff")
+            audio.export(output_filename, format="mp3")
+            os.remove("temp.aiff")
+            return '/' + output_filename
 
         elif mode == "siri-pv":
             os.system(f'say -v {reference_audio} -o static/audio/audio.aiff {repr(text)}')
-            export_audio("static/audio/audio.aiff")
+            export_audio("static/audio/audio.aiff", "static/audio/audio.mp3")
 
         elif mode == "native":
             self.tts_params.update({
                 "text": text,
-                "ref_audio_path": f"static/audio/{reference_audio}",
+                "ref_audio_path": reference_audio,
             })
+
+            # Create directory structure if it doesn't exist
+            if project and chapter:
+                audio_dir = f"static/audio/audiobooks/{project}/{chapter}"
+                os.makedirs(audio_dir, exist_ok=True)
+                
+                # Use paragraph number in filename if provided
+                if paragraph:
+                    output_filename = f"{audio_dir}/paragraph_{paragraph}.mp3"
+                else:
+                    output_filename = f"{audio_dir}/full_chapter.mp3"
+            else:
+                output_filename = f"static/audio/{uuid.uuid4()}.mp3"
 
             with torch.no_grad():
                 tts_generator = self.tts_pipeline.run(self.tts_params)
@@ -315,7 +332,15 @@ class AGIWorker:
                 buffer = io.BytesIO()
                 sf.write(buffer, audio_data, sr, format='WAV')
                 buffer.seek(0)
-                export_audio(buffer)
+                export_audio(buffer, output_filename)
+
+                # Check if audio file already exists
+                if os.path.exists(output_filename):
+                    print(f"Audio file {output_filename} already exists")
+                    return '/' + output_filename
+                else:
+                    print(f"Audio file {output_filename} created")
+                    return '/' + output_filename
 
         elif mode == "11labs":
             client = ElevenLabs(api_key=self.config['security']['11labs_key'])
@@ -410,8 +435,8 @@ class AGIWorker:
         if self.config["ai"]["voice"]:
             self.load_voice_model()
 
-if __name__ == "__main__":
-    """
+"""if __name__ == "__main__":
+    
     worker = AGIWorker()
 
     # Test Image Capture
@@ -428,5 +453,4 @@ if __name__ == "__main__":
     # Test Text Generation
     worker.config["server"]["yuna_text_mode"] = "koboldcpp"
     response = worker.generate_text(text="Hello, Yuna!", kanojo="", chat_history=[{"name": "Yuki", "message": "Hello"}], useHistory=True, yunaConfig=worker.config, stream=False)
-    print(response)
-    """
+    print(response)"""
