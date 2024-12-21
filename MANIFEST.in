@@ -1,6 +1,7 @@
 include README.md
-include LICENSE
-CODE_OF_CONDUCT.md
-requirements.txt
-SECURITY.md
-aiflow/*
+include LICENSE.md
+include CONTRIBUTING.md
+include CODE_OF_CONDUCT.md
+include SECURITY.md
+include .github/*
+include aiflow/*

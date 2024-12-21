@@ -5,13 +5,13 @@ with open("README.md", "r") as fh:
 
 setup(
     name='aiflow',
-    version='7.0.1',
+    version='1.0.0',
     author='Yuki Arimo',
     author_email='yukiarimo@gmail.com',
     description="AiFlow Package for Testing and Running LLMs",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url='https://yukiarimo.com',
+    url='https://www.yukiarimo.com',
     packages=find_packages(),
     include_package_data=True,
     install_requires=[],

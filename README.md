@@ -1,9 +1,10 @@
 # AiFlow
-Welcome to the AiFlow project! AiFlow is a platform that bridges the gap between data processing and machine learning. It is an open-source platform that enables organizations to create and manage end-to-end machine learning workflows. AiFlow is designed to scale machine learning in production and make it easier to develop and deploy machine learning applications.
+Welcome to the AiFlow project! AiFlow is a python package that provides a simple and easy-to-use interface for building, evaluating and training machine learning models. AiFlow is designed to be a lightweight package that can be used to quickly build and train models without the need for complex frameworks or libraries.
 
 ## Installation
 To install AiFlow, run the following commans:
+
 ```bash
 python setup.py sdist bdist_wheel
-pip install dist/aiflow-7.0.1-py3-none-any.whl --force-reinstall
+pip install dist/aiflow-1.0.0-py3-none-any.whl --force-reinstall
 ```
