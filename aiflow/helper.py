@@ -23,8 +23,9 @@ def get_config(config_path='static/config.json', config=None):
             "search": False,
             "audio": False,
             "mind": False,
+            "voice": False,
             "max_new_tokens": 1024,
-            "context_length": 8192,
+            "context_length": 16384,
             "temperature": 0.7,
             "repetition_penalty": 1.11,
             "last_n_tokens_size": 128,
@@ -37,7 +38,7 @@ def get_config(config_path='static/config.json', config=None):
             "gpu_layers": -1,
             "use_mmap": False,
             "flash_attn": True,
-            "use_mlock": False,
+            "use_mlock": True,
             "offload_kqv": True
         },
         "server": {
@@ -48,11 +49,11 @@ def get_config(config_path='static/config.json', config=None):
             "miru_default_model": "yuna-ai-miru-v0.gguf",
             "eyes_default_model": "yuna-ai-miru-eye-v0.gguf",
             "voice_default_model": "yuna-ai-voice-v1",
-            "voice_model_config": ["YunaAi-e200.ckpt", "YunaAi_e65_s2925.pth"],
+            "voice_model_config": ["YunaAi.ckpt", "YunaAi.pth"],
             "device": "mps",
             "yuna_text_mode": "koboldcpp",
-            "yuna_audio_mode": "native",
-            "yuna_reference_audio": "reference.wav"
+            "yuna_audio_mode": "siri",
+            "yuna_reference_audio": "static/audio/reference.wav"
         },
         "settings": {
             "pseudo_api": False,

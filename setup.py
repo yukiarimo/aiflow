@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name='aiflow',
-    version='1.0.0',
+    version='2.0.0',
     author='Yuki Arimo',
     author_email='yukiarimo@gmail.com',
     description="AiFlow Package for Testing and Running LLMs",
@@ -17,7 +17,7 @@ setup(
     install_requires=[],
     classifiers=[
         'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: BSD License',
+        'License :: OSI Approved :: Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International Public License',
         'Operating System :: OS Independent',
     ],
     python_requires='>=3.8',
