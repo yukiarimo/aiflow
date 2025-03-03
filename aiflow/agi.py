@@ -58,7 +58,6 @@ class AGIWorker:
                           for m in (chat_history or [])] if useHistory else '')
         current = text.get('text') if isinstance(text, dict) else text
         final = f"{history}<{user}>{current}</{user}>\n<{asst}>"
-        print(f"History rendered: {history}\nfunction get_history_text\nFinal text: {final}")
         return final
 
     def generate_text(self, text=None, kanojo=None, chat_history=None, useHistory=True, yunaConfig=None, stream=False):
@@ -178,14 +177,14 @@ class AGIWorker:
             if self.config["server"]["miru_default_model"] == "":
                 raise ValueError("No default model set for miru")
             elif not os.path.exists(self.config["server"]["miru_default_model"]):
-                raise FileNotFoundError(f"Model {self.config['server']['miru_default_model']} not found")
-            elif self.config["server"]["miru_model_type"] == "moondream":
+                raise FileNotFoundError(f"Model {self.config['server']['miru_default_model'][0]} not found")
+            elif self.config["server"]["yuna_miru_mode"] == "moondream":
                 from llama_cpp import Llama
                 from llama_cpp.llama_chat_format import MoondreamChatHandler
 
                 self.image_model = Llama(
-                    model_path=self.config['server']['miru_default_model'],
-                    chat_handler=MoondreamChatHandler(clip_model_path=self.config['server']['eyes_default_model']),
+                    model_path=self.config['server']['miru_default_model'][0],
+                    chat_handler=MoondreamChatHandler(clip_model_path=self.config['server']['miru_default_model'][1]),
                     n_ctx=4096,
                     last_n_tokens_size=self.config["ai"]["last_n_tokens_size"],
                     seed=self.config["ai"]["seed"],
@@ -205,7 +204,7 @@ class AGIWorker:
         if not all([image_path, prompt, self.image_model]) or not os.path.exists(image_path):
             raise ValueError("Missing required inputs or image not found")
             
-        if self.config["server"]["miru_model_type"] == "moondream":
+        if self.config["server"]["yuna_miru_mode"] == "moondream":
             result = self.image_model.create_chat_completion(messages=[
                 {"role": "system", "content": "You are an assistant who perfectly describes images and answers questions about them."},
                 {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"file://{os.path.join(os.getcwd(), image_path)}"}}]}
@@ -355,5 +354,5 @@ class AGIWorker:
             self.load_image_model()
         if self.config["ai"]["audio"]:
             self.load_audio_model()
-        if self.config["ai"]["voice"]:
+        if self.config["ai"]["hanasu"]:
             self.load_voice_model()

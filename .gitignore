@@ -123,3 +123,11 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 tests/*
+
+# For models
+aiflow/models/kokoro/embedding_cache/*
+aiflow/models/kokoro/checkpoints/*
+aiflow/models/kokoro/logs/*
+aiflow/models/kokoro/datasets/*
+!aiflow/models/kokoro/datasets/dataset_sample.json
+aiflow/models/kokoro/emotion_plots/*
