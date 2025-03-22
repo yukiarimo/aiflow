@@ -64,7 +64,7 @@ class AudioDataWorker:
         )
         processed = []
         current = AudioSegment.empty()
-        
+
         for chunk in chunks:
             current += chunk
             while len(current) >= min_chunk_length:
@@ -72,7 +72,7 @@ class AudioDataWorker:
                 processed.append(current[:split_point])
                 current = current[split_point:] if split_point < len(current) else AudioSegment.empty()
                 if len(current) < min_chunk_length: break
-        
+
         if len(current) > 0: processed.append(current)
         for i, chunk in enumerate(processed, 1):
             chunk.export(f"{output_dir}/chunk_{i}.wav", format="wav")

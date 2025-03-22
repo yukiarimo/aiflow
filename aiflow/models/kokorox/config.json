@@ -1,0 +1,21 @@
+{
+    "model_name": "Kokoro X V1",
+    "embedding_model_path": "/Users/yuki/Documents/Github/yuna-ai/lib/models/yuna/yuna-ai-v4-q5_k_m.gguf",
+    "emotion_model_path": "/Users/yuki/Documents/Github/yuna-ai/lib/models/agi/kokoro/yuna-ai-kokoro-v1.pth",
+    "embedding_dimensions": 4096,
+    "num_emotions": 6,
+    "emotion_names": ["sweet", "cool", "passion", "otona", "intelligence", "pure"],
+    "memory_embedding_size": 512,
+    "input_embedding_size": 4096,
+    "state_hidden_size": 512,
+    "filter_hidden_dim": 1024,
+    "learning_rate": 0.0005,
+    "batch_size": 32,
+    "epochs": 80,
+    "chunk_type": "paragraph",
+    "max_tokens_per_chunk": 512,
+    "target_token_limit": 8192,
+    "history_weight": 0.01,
+    "device": "mps",
+    "dataset_path": "datasets/dataset.json"
+}

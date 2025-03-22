@@ -10,14 +10,6 @@ class ChatHistoryManager:
         self.use_file = use_file
         self.memory_storage = {}  # Format: {username: {chat_id: history}}
 
-    def _get_user_folder(self, username):
-        path = os.path.join("db/history", username)
-        os.makedirs(path, exist_ok=True)
-        return path
-
-    def _get_file_path(self, username, chat_id):
-        return os.path.join(self._get_user_folder(username), str(chat_id))
-
     def _get_encryption_key(self):
         key = self.config['security'].get('encryption_key')
         if not key:
@@ -25,6 +17,14 @@ class ChatHistoryManager:
             self.config['security']['encryption_key'] = key
             agi.get_config(self.config)
         return key.encode()
+
+    def _get_user_folder(self, username):
+        path = os.path.join("db/history", username)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _get_file_path(self, username, chat_id):
+        return os.path.join(self._get_user_folder(username), str(chat_id))
 
     def _read_encrypted_file(self, path):
         try:
@@ -38,45 +38,30 @@ class ChatHistoryManager:
             file.write(self.fernet.encrypt(data.encode()))
 
     def _get_memory_storage(self, username):
-        if username not in self.memory_storage:
-            self.memory_storage[username] = {}
-        return self.memory_storage[username]
+        return self.memory_storage.setdefault(username, {})
+
+    def _get_template(self):
+        return [
+            {"name": self.config['ai']['names'][0], "text": "Hello", "data": None, "type": "text", "id": "msg-0"},
+            {"name": self.config['ai']['names'][1], "text": "Hi", "data": None, "type": "text", "id": "msg-1"}
+        ]
 
     def create_chat_history_file(self, username, chat_id):
-        template = [
-            {
-                "name": self.config['ai']['names'][0],
-                "text": "Hello",
-                "data": None,
-                "type": "text",
-            },
-            {
-                "name": self.config['ai']['names'][1],
-                "text": "Hello",
-                "data": None,
-                "type": "text",
-            },
-        ]
-        
+        template = self._get_template()
         if self.use_file:
-            path = self._get_file_path(username, chat_id)
-            self._write_encrypted_file(path, json.dumps(template))
+            self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(template))
         else:
-            storage = self._get_memory_storage(username)
-            storage[str(chat_id)] = template
+            self._get_memory_storage(username)[str(chat_id)] = template
 
     def save_chat_history(self, chat_history, username, chat_id):
         if self.use_file:
-            path = self._get_file_path(username, chat_id)
-            self._write_encrypted_file(path, json.dumps(chat_history))
+            self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(chat_history))
         else:
-            storage = self._get_memory_storage(username)
-            storage[str(chat_id)] = chat_history
+            self._get_memory_storage(username)[str(chat_id)] = chat_history
 
     def load_chat_history(self, username, chat_id):
         if self.use_file:
-            path = self._get_file_path(username, chat_id)
-            decrypted = self._read_encrypted_file(path)
+            decrypted = self._read_encrypted_file(self._get_file_path(username, chat_id))
             if decrypted is None:
                 self.create_chat_history_file(username, chat_id)
                 print(f"Chat history file for {chat_id} does not exist, creating a new one for {username}")
@@ -93,17 +78,16 @@ class ChatHistoryManager:
     def delete_chat_history_file(self, username, chat_id):
         if self.use_file:
             path = self._get_file_path(username, chat_id)
-            os.remove(path) if os.path.exists(path) else None
+            if os.path.exists(path):
+                os.remove(path)
         else:
-            storage = self._get_memory_storage(username)
-            storage.pop(str(chat_id), None)
+            self._get_memory_storage(username).pop(str(chat_id), None)
 
     def rename_chat_history_file(self, username, old_chat_id, new_chat_id):
         if self.use_file:
             old_path = self._get_file_path(username, old_chat_id)
-            new_path = self._get_file_path(username, new_chat_id)
             if os.path.exists(old_path):
-                os.rename(old_path, new_path)
+                os.rename(old_path, self._get_file_path(username, new_chat_id))
         else:
             storage = self._get_memory_storage(username)
             if str(old_chat_id) in storage:
@@ -112,22 +96,26 @@ class ChatHistoryManager:
     def list_history_files(self, username):
         if self.use_file:
             folder = self._get_user_folder(username)
-            return sorted(
-                [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))],
-                key=lambda x: x.lower()
-            )
+            return sorted([f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))], key=str.lower)
         else:
-            storage = self._get_memory_storage(username)
-            return sorted(storage.keys(), key=lambda x: x.lower())
+            return sorted(self._get_memory_storage(username).keys(), key=str.lower)
 
-    def delete_message(self, username, chat_id, target_message):
-        history = self.load_chat_history(username, chat_id)
-        indices_to_delete = [i for i, msg in enumerate(history)
-                           if msg['message'].strip() == target_message.strip()]
+    def delete_message(self, user_id, chat_id, message_id):
+        """Delete a message by its ID."""
+        history = self.load_chat_history(user_id, chat_id)
+        # Find and remove the message with matching ID
+        for i, msg in enumerate(history):
+            if msg.get('id') == message_id:
+                history.pop(i)
+                break
+        return self.save_chat_history(history, user_id, chat_id)
 
-        for index in sorted(indices_to_delete, reverse=True):
-            del history[index]
-            if index < len(history):
-                del history[index]
-
-        self.save_chat_history(history, username, chat_id)
+    def edit_message(self, user_id, chat_id, message_id, new_text):
+        """Edit a message by its ID."""
+        history = self.load_chat_history(user_id, chat_id)
+        # Find and edit the message with matching ID
+        for msg in history:
+            if msg.get('id') == message_id:
+                msg['text'] = new_text
+                break
+        return self.save_chat_history(history, user_id, chat_id)

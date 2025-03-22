@@ -1,12 +1,12 @@
-import io
 import json
 import os
 import uuid
 import torch
 import requests
-import soundfile as sf
-from aiflow.helper import get_config, clearText, search_web, get_html, get_transcript
-from transformers import pipeline
+from aiflow.utils import get_config, clearText, search_web, get_html, get_transcript, load_kokoro_model, get_text_embedding, load_config
+from pydub import AudioSegment
+from aiflow.models.kokorox import model as kokorox_model
+from aiflow.models.kokoro import model as kokoro_emotion_processor
 
 def load_conditional_imports(config):
     imports = {
@@ -19,7 +19,7 @@ def load_conditional_imports(config):
         'mlx': {'from': ['mlx_lm'], 'import': ['generate', 'load']},
         'audio': {'from': ['transformers'], 'import': ['pipeline']},
         '11labs': {'from': ['elevenlabs', 'elevenlabs.client'], 'import': ['VoiceSettings', 'ElevenLabs']},
-        'native_voice': {'from': ['gpt_sovits_python'], 'import': ['TTS', 'TTS_Config']}
+        'gptsovits': {'from': ['gpt_sovits_python'], 'import': ['TTS', 'TTS_Config']}
     }
 
     mode = config["server"].get("yuna_text_mode")
@@ -29,13 +29,13 @@ def load_conditional_imports(config):
         to_import.append('agi')
     elif mode in ["native", "mlx"]:
         to_import.append(mode)
-    
+
     if config['ai'].get('audio'):
         to_import.append('audio')
-    
+
     audio_mode = config['server'].get('yuna_audio_mode')
     if audio_mode in ["11labs", "native"]:
-        to_import.append('11labs' if audio_mode == "11labs" else 'native_voice')
+        to_import.append('11labs' if audio_mode == "11labs" else 'gptsovits')
 
     for imp in to_import:
         for module, items in zip(imports[imp]['from'], imports[imp]['import']):
@@ -50,6 +50,9 @@ class AGIWorker:
         self.image_model = None
         self.voice_model = None
         self.audio_model = None
+        self.kokoro_model = None
+        self.kokoro_x_model = None
+        self.kokoro_x_processor = None
         load_conditional_imports(self.config)
 
     def get_history_text(self, chat_history, text, useHistory, yunaConfig):
@@ -63,8 +66,10 @@ class AGIWorker:
     def generate_text(self, text=None, kanojo=None, chat_history=None, useHistory=True, yunaConfig=None, stream=False):
         self.config = yunaConfig or self.config
         mode = self.config["server"]["yuna_text_mode"]
-        # Build the full prompt (including history).
-        final_prompt = self.get_history_text(chat_history, text, useHistory, yunaConfig)
+        if useHistory:
+            final_prompt = self.get_history_text(chat_history, text, useHistory, yunaConfig)
+        else:
+            final_prompt = text
 
         if mode == "llamacpp":
             response = self.text_model(
@@ -203,7 +208,7 @@ class AGIWorker:
     def capture_image(self, image_path=None, prompt=None):
         if not all([image_path, prompt, self.image_model]) or not os.path.exists(image_path):
             raise ValueError("Missing required inputs or image not found")
-            
+
         if self.config["server"]["yuna_miru_mode"] == "moondream":
             result = self.image_model.create_chat_completion(messages=[
                 {"role": "system", "content": "You are an assistant who perfectly describes images and answers questions about them."},
@@ -256,96 +261,154 @@ class AGIWorker:
             }
 
     def load_text_model(self):
-            mode = self.config["server"].get("yuna_text_mode")
-            if mode == "native":
-                self.text_model = Llama(
-                    model_path=f"lib/utils/models/yuna/{self.config['server']['yuna_default_model']}",
-                    n_ctx=self.config["ai"]["context_length"],
-                    last_n_tokens_size=self.config["ai"]["last_n_tokens_size"],
-                    seed=self.config["ai"]["seed"],
-                    n_batch=self.config["ai"]["batch_size"],
-                    n_gpu_layers=self.config["ai"]["gpu_layers"],
-                    n_threads=self.config["ai"]["threads"],
-                    use_mmap=self.config["ai"]["use_mmap"],
-                    use_mlock=self.config["ai"]["use_mlock"],
-                    flash_attn=self.config["ai"]["flash_attn"],
-                    offload_kqv=self.config["ai"]["offload_kqv"],
-                    verbose=False
-                )
-            elif mode == "mlx":
-                from mlx_lm import load
-                self.text_model, self.tokenizer =  load(f"lib/utils/models/yuna/{self.config['server']['yuna_default_model']}")
+        mode = self.config["server"].get("yuna_text_mode")
+        if mode == "native":
+            self.text_model = Llama(
+                model_path=f"lib/utils/models/yuna/{self.config['server']['yuna_default_model']}",
+                n_ctx=self.config["ai"]["context_length"],
+                last_n_tokens_size=self.config["ai"]["last_n_tokens_size"],
+                seed=self.config["ai"]["seed"],
+                n_batch=self.config["ai"]["batch_size"],
+                n_gpu_layers=self.config["ai"]["gpu_layers"],
+                n_threads=self.config["ai"]["threads"],
+                use_mmap=self.config["ai"]["use_mmap"],
+                use_mlock=self.config["ai"]["use_mlock"],
+                flash_attn=self.config["ai"]["flash_attn"],
+                offload_kqv=self.config["ai"]["offload_kqv"],
+                verbose=False
+            )
+        elif mode == "mlx":
+            from mlx_lm import load
+            self.text_model, self.tokenizer =  load(f"lib/utils/models/yuna/{self.config['server']['yuna_default_model']}")
 
-    def export_audio(self, input_file, output_filename):
-        audio = AudioSegment.from_file(input_file)
-        audio.export(output_filename, format="mp3")
+    def load_kokoro_model(self, config, model_path): self.kokoro_model = kokoro_emotion_processor.KokoroEmotionProcessor(config, model_path)
 
+    def load_kokorox_model(self, config, checkpoint_path=None):
+        """Load KokoroX processor with trained filter model."""
+        # Load Kokoro emotional model
+        self.kokoro_model = load_kokoro_model(config)
+
+        # Create KokoroX processor
+        self.kokoro_x_processor = kokorox_model.KokoroXProcessor(
+            config=config,
+            kokoro_model=self.kokoro_model,
+            embedding_function=get_text_embedding
+        )
+
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=self.kokoro_x_processor.device)
+            if 'model_state_dict' in checkpoint:
+                self.kokoro_x_processor.content_filter.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.kokoro_x_processor.content_filter.load_state_dict(checkpoint)
+            print(f"Loaded content filter from {checkpoint_path}")
+        else:
+            print(f"Warning: No checkpoint found at {checkpoint_path}, using untrained model")
+
+    def export_audio(self, input_file, output_filename): AudioSegment.from_file(input_file).export(output_filename, format="mp3")
     def transcribe_audio(self, audio_file): return self.yunaListen(audio_file, chunk_length_s=30, batch_size=60, return_timestamps=False)['text']
-
-    def speak_text(self, text, output_filename="audio.mp3"):
+    def speak_text(self, text, output_filename=None):
         output_filename = f"static/audio/{uuid.uuid4()}.mp3"
         mode = self.config['server']['yuna_audio_mode']
         ref_audio = self.config['server']['yuna_reference_audio']
 
-        try:
-            if mode == 'siri':
-                temp = "temp.aiff"
-                os.system(f'say -o {temp} {repr(text)}')
-                self.export_audio(temp, output_filename)
-                os.remove(temp)
-            elif mode == "siri-pv":
-                temp = "static/audio/audio.aiff"
-                os.system(f'say -v {ref_audio} -o {temp} {repr(text)}')
-                self.export_audio(temp, output_filename)
-            elif mode == "native":
-                self.tts_params.update({"text": text, "ref_audio_path": ref_audio})
-                with torch.no_grad():
-                    sr, audio = next(self.tts_pipeline.run(self.tts_params))
-                    buffer = io.BytesIO()
-                    sf.write(buffer, audio, sr, format='WAV')
-                    buffer.seek(0)
-                    self.export_audio(buffer, output_filename)
-            elif mode == "11labs":
-                audio = b''.join(ElevenLabs(api_key=self.config['security']['11labs_key']).generate(
+        if mode == 'siri':
+            temp = "temp.aiff"
+            os.system(f'say -o {temp} {repr(text)}')
+            self.export_audio(temp, output_filename)
+            os.remove(temp)
+        elif mode == "siri-pv":
+            temp = "static/audio/audio.aiff"
+            os.system(f'say -v {ref_audio} -o {temp} {repr(text)}')
+            self.export_audio(temp, output_filename)
+        elif mode == "native":
+            self.tts_params.update({"text": text, "ref_audio_path": ref_audio})
+            with torch.no_grad():
+                sr, audio = next(self.tts_pipeline.run(self.tts_params))
+                temp_file = f"temp_{uuid.uuid4()}.wav"
+                audio_segment = AudioSegment(
+                    audio.tobytes(), 
+                    frame_rate=sr,
+                    sample_width=2,
+                    channels=1 if audio.ndim == 1 else audio.shape[1]
+                )
+                audio_segment.export(temp_file, format="wav")
+                self.export_audio(temp_file, output_filename)
+                os.remove(temp_file)
+        elif mode == "11labs":
+            with open(output_filename, "wb") as f:
+                f.write(b''.join(ElevenLabs(api_key=self.config['security']['11labs_key']).generate(
                     text=text, voice="Yuna Upgrade Use",
                     voice_settings=VoiceSettings(stability=0.40, similarity_boost=1.00, style=0.00, use_speaker_boost=True),
                     model="eleven_multilingual_v2", stream=False, output_format="mp3_44100_192"
-                ))
-                with open(output_filename, "wb") as f:
-                    f.write(audio)
+                )))
 
             return '/' + output_filename if os.path.exists(output_filename) else None
-        except Exception as e:
-            print(f"Error generating audio: {e}")
-            return None
 
     def processTextFile(self, text_file, question, temperature):
-            loader, splitter = TextLoader(text_file), RecursiveCharacterTextSplitter(chunk_size=200)
-            docs = splitter.split_documents(loader.load())
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-            vectorstore = Chroma.from_documents(documents=docs, embedding=embeddings)
-            llm = LlamaCpp(model_path="lib/utils/models/yuna/yuna-ai-v3-q5_k_m.gguf", temperature=temperature, verbose=False)
-            qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=vectorstore.as_retriever())
-            return qa.invoke(question).get('result', '')
+        docs = RecursiveCharacterTextSplitter(chunk_size=200).split_documents(TextLoader(text_file).load())
+        vectorstore = Chroma.from_documents(
+            documents=docs, 
+            embedding=HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        )
+        return RetrievalQA.from_chain_type(
+            llm=LlamaCpp(model_path="lib/utils/models/yuna/yuna-ai-v3-q5_k_m.gguf", temperature=temperature, verbose=False),
+            chain_type="stuff",
+            retriever=vectorstore.as_retriever()
+        ).invoke(question).get('result', '')
+
+    def kokorox_text_filter(question, text_data, target_emotions=None, token_limit=None, config_path='config.json', checkpoint_path=None):
+        """
+        Process text data with KokoroX model and return filtered result.
+
+        Args:
+            question (str): The question or prompt for processing
+            text_data (str): The text data to be processed
+            target_emotions (list): List of target emotions to consider
+            token_limit (int): Maximum number of tokens in output
+            config_path (str): Path to config file
+            checkpoint_path (str): Path to model checkpoint
+
+        Returns:
+            str: The filtered text result
+        """
+        # Load config
+        config = load_config(config_path)
+
+        # Load model
+        processor = load_kokorox_model(config, checkpoint_path)
+
+        # Set default emotions if not provided
+        if target_emotions is None:
+            target_emotions = config['emotion_names']
+        else:
+            # Validate emotions
+            valid_emotions = []
+            for emotion in target_emotions:
+                if emotion in config['emotion_names']:
+                    valid_emotions.append(emotion)
+                else:
+                    print(f"Warning: Unknown emotion '{emotion}', ignoring")
+            target_emotions = valid_emotions if valid_emotions else config['emotion_names']
+
+        # Override token limit if specified
+        if token_limit:
+            processor.target_token_limit = token_limit
+
+        # Process the data
+        result = processor.process(question, text_data, target_emotions)
+
+        return result
+
+    def get_emotional_trigger(self, text): return self.kokoro_model.process_text(text)
 
     def web_search(self, search_query):
         answer, search_results, image_urls = search_web(search_query)
-        return {
-            'answer': answer,
-            'results': search_results,
-            'images': image_urls
-        }
+        return {'answer': answer, 'results': search_results, 'images': image_urls}
 
-    def scrape_webpage(self, url):
-        html_content = get_html(url)
-        return html_content
-
-    def get_youtube_transcript(self, url):
-        transcript = get_transcript(url)
-        return transcript
-
-    def blog_email(self, email, subject, message):
-        pass
+    def scrape_webpage(self, url): return get_html(url)
+    def get_youtube_transcript(self, url): return get_transcript(url)
+    def blog_email(self, email, subject, message): pass
 
     def start(self):
         if self.config["ai"]["mind"]:
@@ -356,3 +419,7 @@ class AGIWorker:
             self.load_audio_model()
         if self.config["ai"]["hanasu"]:
             self.load_voice_model()
+        if self.config["ai"]["emotions"]:
+            self.load_kokoro_model()
+        if self.config["ai"]["himitsu"]:
+            self.load_kokorox_model(self.config)

@@ -1,0 +1,2 @@
+# Kokoro model
+Kokoro is an emotional analysis model that provides fine-grained emotional analysis of text data. This model is built on top of the Kokoro emotional analysis model, which provides a fine-grained emotional analysis of text data.
