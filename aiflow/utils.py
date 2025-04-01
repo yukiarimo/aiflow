@@ -9,28 +9,17 @@ from tqdm import tqdm
 import hashlib
 import torch
 from torch.utils.data import Dataset, DataLoader
-from contextlib import contextmanager
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 from functools import lru_cache
 from aiflow.models.kokoro import model as kokoro
-
-import torch
-import os
-from aiflow.models.kokorox import KokoroXProcessor
-from aiflow.utils import load_config, get_text_embedding, load_kokoro_model
+import requests
+from bs4 import BeautifulSoup
+import random
 
 def get_config(config_path='static/config.json', config=None):
     default_config = {
         "ai": {
             "names": ["Yuki", "Yuna"],
             "himitsu": False,
-            "agi": False,
             "emotions": False,
             "miru": False,
             "audio": False,
@@ -55,14 +44,16 @@ def get_config(config_path='static/config.json', config=None):
         },
         "server": {
             "url": "",
-            "yuna_default_model": "lib/models/yuna/yuna-ai-v4-q5_k_m.gguf",
-            "miru_default_model": ["yuna-ai-miru-v0.gguf", "yuna-ai-miru-eye-v0.gguf"],
-            "voice_default_model": "yuna-ai-voice-v1",
-            "voice_model_config": ["YunaAi.ckpt", "YunaAi.pth"],
+            "yuna_default_model": "lib/models/yuna/yuna-ai-v4-miru-mlx",
+            "miru_default_model": ["lib/models/yuna/yuna-ai-v4-miru-q5_k_m.gguf", "lib/models/yuna/yuna-ai-v4-miru-eye-q5_k_m.gguf"],
+            "yuna_himitsu_model": "lib/models/yuna/himitsu-v1-mlx",
+            "voice_default_model": "lib/models/agi/hanasu/yuna-ai-voice-v1",
+            "voice_model_config": ["G_108000.pth", "config.json"],
             "device": "mps",
-            "yuna_text_mode": "koboldcpp",
-            "yuna_miru_mode": "native",
-            "yuna_audio_mode": "siri",
+            "yuna_text_mode": "mlxvlm",
+            "yuna_himitsu_mode": "mlx",
+            "yuna_miru_mode": "mlxvlm",
+            "yuna_audio_mode": "hanasu",
             "yuna_reference_audio": "static/audio/reference.wav"
         },
         "settings": {
@@ -96,112 +87,102 @@ def clearText(text):
     text = re.sub(r':-?\)|:-?\(|;-?\)|:-?D|:-?P', '', text)
     return ' '.join(text.split()).strip()
 
-@contextmanager
-def get_driver():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    try:
-        yield driver
-    finally:
-        driver.quit()
+def search_web(query, base_url='https://www.google.com', process_data=False):
+    """
+    Scrape DuckDuckGo web search results for a query
 
-def search_web(search_query, base_url='https://www.google.com', process_data=False):
-    encoded_query = urllib.parse.quote(search_query)
-    search_url = f'{base_url}/search?q={encoded_query}'
+    Args:
+        query (str): The search query
 
-    with get_driver() as driver:
+    Returns:
+        list: JSON-serializable list of search results
+    """
+    # Constants
+    USER_AGENTS = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0'
+    ]
+
+    # Sanitize the query
+    query = re.sub(r'[+\-\"\\/*^|<>~`]', '', query)
+    query = re.sub(r'\s+', ' ', query).strip()
+    query = query[:300]  # Only search first 300 chars
+
+    # Prepare URL and request
+    encoded_query = urllib.parse.quote(query)
+    url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://duckduckgo.com/',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+    # Make request with retries
+    session = requests.Session()
+    max_retries = 3
+
+    for attempt in range(max_retries):
         try:
-            driver.get(search_url)
-        except Exception as e:
-            print(f"Error navigating to {search_url}: {e}")
-            return None, None, None
+            response = session.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(random.uniform(2, 5))
+            else:
+                return []
 
-        answer = driver.execute_script("""
-            var ans = document.querySelector('.kno-rdesc > span') || document.querySelector('.hgKElc');
-            return ans ? ans.textContent.trim() : 'Answer not found.';
-        """)
+    # Parse results
+    soup = BeautifulSoup(response.text, 'html.parser')
+    results = []
 
-        search_results = driver.execute_script("""
-            return Array.from(document.querySelectorAll('.g')).map(result => {
-                const link = result.querySelector('.yuRUbf a')?.href || '';
-                const title = result.querySelector('.yuRUbf a h3')?.textContent.trim() || '';
-                const description = result.querySelector('.VwiC3b')?.textContent.trim() || '';
-                return { 'Link': link, 'Title': title, 'Description': description };
-            }).filter(r => r.Link && r.Title && r.Description);
-        """)
-
-    image_urls = search_images(search_query, base_url)
-    return answer, search_results, image_urls
-
-def search_images(search_query, base_url='https://www.google.com'):
-    encoded_query = urllib.parse.quote(search_query)
-    image_search_url = f'{base_url}/search?q={encoded_query}&tbm=isch'
-
-    with get_driver() as driver:
+    for result in soup.select('.result'):
         try:
-            driver.get(image_search_url)
-        except Exception as e:
-            print(f"Error navigating to {image_search_url}: {e}")
-            return None
+            # Extract title
+            title_element = result.select_one('.result__a')
+            title = title_element.get_text().strip() if title_element else ""
 
-        image_urls = driver.execute_script("""
-            let images = Array.from(document.querySelectorAll('img'));
-            return images.slice(0, 3).map(img => img.src);
-        """)
-    return image_urls
+            # Extract URL
+            url_element = result.select_one('.result__url')
+            url = f"https://{url_element.get_text().strip()}" if url_element else ""
 
-def get_html(url):
-    with get_driver() as driver:
-        try:
-            driver.get(url)
-            return driver.page_source
-        except Exception as e:
-            print(f"Error navigating to {url}: {e}")
-            return None
+            # If there's a direct link that's not a DuckDuckGo redirect
+            link_element = result.select_one('a.result__a')
+            if link_element and link_element.has_attr('href'):
+                href = link_element['href']
+                if href.startswith('http') and '/duckduckgo.com/' not in href:
+                    url = href
+
+            # Extract description
+            desc_element = result.select_one('.result__snippet')
+            description = desc_element.get_text().strip() if desc_element else ""
+
+            # Extract site name
+            site = url_element.get_text().strip() if url_element else ""
+
+            if title and (url or site):
+                results.append({
+                    'title': title,
+                    'description': description,
+                    'url': url,
+                    'site': site
+                })
+        except Exception:
+            continue
+
+    return results
 
 def get_transcript(url):
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    service = Service(ChromeDriverManager().install())
-    with webdriver.Chrome(service=service, options=chrome_options) as driver:
-        try:
-            driver.get(url)
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            time.sleep(2)
-
-            driver.execute_script("""
-                if (window.trustedTypes && window.trustedTypes.createPolicy && !window.trustedTypes.defaultPolicy) {
-                    window.trustedTypes.createPolicy('default', {
-                        createHTML: string => string
-                    });
-                }
-            """)
-
-            transcript = driver.execute_script("""
-                // JavaScript to extract YouTube transcript
-                const button = document.querySelector('button.ytp-transcript');
-                if (button) {
-                    button.click();
-                    const texts = Array.from(document.querySelectorAll('.cue-group .cue')).map(el => el.textContent.trim());
-                    return texts.join(' ');
-                } else {
-                    return 'Transcript not available.';
-                }
-            """)
-            return transcript
-
-        except Exception as e:
-            print(f"Error getting transcript from {url}: {e}")
-            return None
+    pass
 
 """
-
 BELOW IS FOR CUSTOM MODELS
-
 """
 
 # Global variable to hold the loaded LLaMA model

@@ -3,49 +3,72 @@ import os
 import uuid
 import torch
 import requests
-from aiflow.utils import get_config, clearText, search_web, get_html, get_transcript, load_kokoro_model, get_text_embedding, load_config
+from aiflow.utils import get_config, clearText, search_web
 from pydub import AudioSegment
 from aiflow.models.kokorox import model as kokorox_model
 from aiflow.models.kokoro import model as kokoro_emotion_processor
 
 def load_conditional_imports(config):
-    imports = {
-        'agi': {
-            'from': ['langchain_community.document_loaders', 'langchain.text_splitter', 'langchain_community.vectorstores',
-                    'langchain_huggingface', 'langchain.chains', 'langchain_community.llms'],
-            'import': ['TextLoader', 'RecursiveCharacterTextSplitter', 'Chroma', 'HuggingFaceEmbeddings', 'RetrievalQA', 'LlamaCpp']
+    """
+    Dynamically import modules based on configuration settings.
+
+    Args:
+        config (dict): Application configuration dictionary
+    """
+    # Define import requirements for different features
+    import_requirements = {
+        'himitsu': {
+            'modules': {
+                'aiflow.models.kokorox.model': ['KokoroXProcessor'],
+                'aiflow.models.kokoro.model': ['KokoroEmotionProcessor'],
+                'aiflow.utils': ['get_text_embedding', 'load_kokorox_model', 'load_config', 'load_kokoro_model']
+            }
         },
-        'native': {'from': ['llama_cpp'], 'import': ['Llama']},
-        'mlx': {'from': ['mlx_lm'], 'import': ['generate', 'load']},
-        'audio': {'from': ['transformers'], 'import': ['pipeline']},
-        '11labs': {'from': ['elevenlabs', 'elevenlabs.client'], 'import': ['VoiceSettings', 'ElevenLabs']},
-        'gptsovits': {'from': ['gpt_sovits_python'], 'import': ['TTS', 'TTS_Config']}
+        'kokoro': {
+            'modules': {
+                'aiflow.models.kokoro.model': ['KokoroEmotionProcessor'],
+                'aiflow.utils': ['get_text_embedding', 'load_kokoro_model', 'load_config']
+            }
+        },
+        'llamacpp': {'modules': {'llama_cpp': ['Llama']}},
+        'mlx': {'modules': {'mlx_lm': ['generate', 'load']}},
+        'audio': {'modules': {'transformers': ['pipeline']}},
+        '11labs': {'modules': {
+            'elevenlabs': ['VoiceSettings'],
+            'elevenlabs.client': ['ElevenLabs']
+        }},
+        'gptsovits': {'modules': {'gpt_sovits_python': ['TTS', 'TTS_Config']}},
+        'hanasu': {'modules': {'hanasu': ['TTS']}}
     }
 
-    mode = config["server"].get("yuna_text_mode")
-    to_import = []
+    features_to_import = []
+    if config["ai"].get("himitsu"): features_to_import.append('himitsu')
+    if config["ai"].get("emotions"): features_to_import.append('kokoro')
 
-    if config["ai"].get("agi"):
-        to_import.append('agi')
-    elif mode in ["native", "mlx"]:
-        to_import.append(mode)
-
-    if config['ai'].get('audio'):
-        to_import.append('audio')
+    text_mode = config["server"].get("yuna_text_mode")
+    if text_mode in ["llamacpp", "mlx", "mlxvlm"]: features_to_import.append(text_mode)
+    if config['ai'].get('audio'): features_to_import.append('audio')
 
     audio_mode = config['server'].get('yuna_audio_mode')
-    if audio_mode in ["11labs", "native"]:
-        to_import.append('11labs' if audio_mode == "11labs" else 'gptsovits')
+    if audio_mode == "11labs": features_to_import.append('11labs')
+    elif audio_mode == "gptsovits": features_to_import.append('gptsovits')
+    elif audio_mode == "hanasu": features_to_import.append('hanasu')
 
-    for imp in to_import:
-        for module, items in zip(imports[imp]['from'], imports[imp]['import']):
-            exec(f"from {module} import {items}")
-            globals()[items] = eval(items)
+    # Execute the imports and add to globals
+    for feature in features_to_import:
+        if feature in import_requirements:
+            for module_name, class_names in import_requirements[feature]['modules'].items():
+                for class_name in class_names:
+                    # Import the module
+                    module = __import__(module_name, fromlist=[class_name])
+                    # Get the class and add to globals
+                    globals()[class_name] = getattr(module, class_name)
 
 class AGIWorker:
     def __init__(self, config=None):
         self.config = get_config() if config is None else config
         self.text_model = None
+        self.himitsu_model = None
         self.tokenizer = None
         self.image_model = None
         self.voice_model = None
@@ -88,13 +111,14 @@ class AGIWorker:
                 return clearText(str(response['choices'][0]['text']))
         elif mode == "mlx":
             kwargs = {
-                "max_tokens": 100,
+                "max_tokens": yunaConfig["ai"]["max_new_tokens"],
+                "temperature": yunaConfig["ai"]["temperature"],
                 "prefill_step_size": 2048,
                 "kv_group_size": 16,
                 "quantized_kv_start": 0,
             }
 
-            text = generate(model=self.text_model, tokenizer=self.tokenizer, prompt="The meaning of life is", verbose=True, **kwargs)
+            text = self.text_model.generate(model=self.text_model, tokenizer=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
             return text
         elif mode in {"lmstudio", "koboldcpp"}:
             # Build payload dynamically using base/common sub-dicts.
@@ -130,7 +154,7 @@ class AGIWorker:
                     "rep_pen_range": 512,
                     "rep_pen_slope": 0,
                     "sampler_order": [6, 5, 0, 2, 3, 1, 4],
-                    "memory": kanojo,
+                    "memory": kanojo if kanojo is not None else "",
                     "trim_stop": True,
                     "genkey": "KCPP9126",
                     "mirostat": 2,
@@ -226,45 +250,25 @@ class AGIWorker:
         )
 
     def load_voice_model(self):
-        if self.config["server"]["yuna_audio_mode"] == "native":
+        if self.config["server"]["yuna_audio_mode"] == "gptsovits":
             soviets_configs = {
                 "default": {
                     "device": "cpu",
                     "is_half": False,
-                    "t2s_weights_path": f"lib/utils/models/agi/voice/{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}",
-                    "vits_weights_path": f"lib/utils/models/agi/voice/{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][1]}",
-                    "cnhuhbert_base_path": f"lib/utils/models/agi/voice/{self.config['server']['voice_default_model']}/chinese-hubert-base",
-                    "bert_base_path": f"lib/utils/models/agi/voice/{self.config['server']['voice_default_model']}/chinese-roberta-wwm-ext-large"
+                    "t2s_weights_path": f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}",
+                    "vits_weights_path": f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][1]}",
+                    "cnhuhbert_base_path": f"{self.config['server']['voice_default_model']}/chinese-hubert-base",
+                    "bert_base_path": f"{self.config['server']['voice_default_model']}/chinese-roberta-wwm-ext-large"
                 }
             }
-            self.tts_config = TTS_Config(soviets_configs)
-            self.tts_pipeline = TTS(self.tts_config)
-            self.tts_params = {
-                "text_lang": "en",
-                "ref_audio_path": self.config['server']['yuna_reference_audio'],
-                "prompt_text": "",
-                "prompt_lang": "en",
-                "top_k": 1,
-                "top_p": 0.6,
-                "temperature": 0.7,
-                "text_split_method": "cut0",
-                "batch_size": 1,
-                "batch_threshold": 1.0,
-                "split_bucket": True,
-                "speed_factor": 1.0,
-                "fragment_interval": 0.3,
-                "seed": 1234,
-                "media_type": "wav",
-                "streaming_mode": False,
-                "parallel_infer": True,
-                "repetition_penalty": 1.25
-            }
+            self.voice_model = TTS(TTS_Config(soviets_configs))
+        elif self.config["server"]["yuna_audio_mode"] == "hanasu": self.TTS(language='EN', device='cpu', use_hf=False, config_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}", ckpt_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}")
 
     def load_text_model(self):
         mode = self.config["server"].get("yuna_text_mode")
-        if mode == "native":
+        if mode == "llamacpp":
             self.text_model = Llama(
-                model_path=f"lib/utils/models/yuna/{self.config['server']['yuna_default_model']}",
+                model_path=self.config['server']['yuna_default_model'],
                 n_ctx=self.config["ai"]["context_length"],
                 last_n_tokens_size=self.config["ai"]["last_n_tokens_size"],
                 seed=self.config["ai"]["seed"],
@@ -277,9 +281,7 @@ class AGIWorker:
                 offload_kqv=self.config["ai"]["offload_kqv"],
                 verbose=False
             )
-        elif mode == "mlx":
-            from mlx_lm import load
-            self.text_model, self.tokenizer =  load(f"lib/utils/models/yuna/{self.config['server']['yuna_default_model']}")
+        elif mode == "mlx": self.text_model, self.tokenizer =  load(self.config['server']['yuna_default_model'])
 
     def load_kokoro_model(self, config, model_path): self.kokoro_model = kokoro_emotion_processor.KokoroEmotionProcessor(config, model_path)
 
@@ -305,6 +307,24 @@ class AGIWorker:
         else:
             print(f"Warning: No checkpoint found at {checkpoint_path}, using untrained model")
 
+    def load_himitsu_model(self, config):
+        if config["server"]["yuna_himitsu_mode"] == "llamacpp":
+            self.himitsu_model = Llama(
+                model_path=config['server']['himitsu_default_model'],
+                n_ctx=config["ai"]["context_length"],
+                last_n_tokens_size=config["ai"]["last_n_tokens_size"],
+                seed=config["ai"]["seed"],
+                n_batch=config["ai"]["batch_size"],
+                n_gpu_layers=config["ai"]["gpu_layers"],
+                n_threads=config["ai"]["threads"],
+                use_mmap=config["ai"]["use_mmap"],
+                use_mlock=config["ai"]["use_mlock"],
+                flash_attn=config["ai"]["flash_attn"],
+                offload_kqv=config["ai"]["offload_kqv"],
+                verbose=False
+            )
+        elif config["server"]["yuna_himitsu_mode"] == "mlx": self.himitsu_model, self.tokenizer =  load(config['server']['himitsu_default_model'])
+
     def export_audio(self, input_file, output_filename): AudioSegment.from_file(input_file).export(output_filename, format="mp3")
     def transcribe_audio(self, audio_file): return self.yunaListen(audio_file, chunk_length_s=30, batch_size=60, return_timestamps=False)['text']
     def speak_text(self, text, output_filename=None):
@@ -321,10 +341,10 @@ class AGIWorker:
             temp = "static/audio/audio.aiff"
             os.system(f'say -v {ref_audio} -o {temp} {repr(text)}')
             self.export_audio(temp, output_filename)
-        elif mode == "native":
-            self.tts_params.update({"text": text, "ref_audio_path": ref_audio})
+        elif mode == "gptsovits":
+            tts_params = {"text_lang": "en", "ref_audio_path": self.config['server']['yuna_reference_audio'], "prompt_text": "", "prompt_lang": "en", "top_k": 1, "top_p": 0.6, "temperature": 0.7, "text_split_method": "cut0", "batch_size": 1, "batch_threshold": 1.0, "split_bucket": True, "speed_factor": 1.0, "fragment_interval": 0.3, "seed": 1234, "media_type": "wav", "streaming_mode": False, "parallel_infer": True, "repetition_penalty": 1.25}
             with torch.no_grad():
-                sr, audio = next(self.tts_pipeline.run(self.tts_params))
+                sr, audio = next(self.voice_model.run(tts_params))
                 temp_file = f"temp_{uuid.uuid4()}.wav"
                 audio_segment = AudioSegment(
                     audio.tobytes(), 
@@ -406,8 +426,6 @@ class AGIWorker:
         answer, search_results, image_urls = search_web(search_query)
         return {'answer': answer, 'results': search_results, 'images': image_urls}
 
-    def scrape_webpage(self, url): return get_html(url)
-    def get_youtube_transcript(self, url): return get_transcript(url)
     def blog_email(self, email, subject, message): pass
 
     def start(self):
@@ -423,3 +441,4 @@ class AGIWorker:
             self.load_kokoro_model()
         if self.config["ai"]["himitsu"]:
             self.load_kokorox_model(self.config)
+            self.load_himitsu_model(self.config)
