@@ -1,0 +1,35 @@
+{
+    "data": {
+      "train_dir": "data/train",
+      "valid_dir": null,
+      "extensions": [".wav", ".flac", ".mp3"]
+    },
+    "audio": {
+      "target_sr": 48000,
+      "low_res_sr": 12000,
+      "channels": 2,
+      "chunk_size_ms": 1000,
+      "inference_chunk_size_ms": 1000
+    },
+    "model": {
+      "base_channels": 96,
+      "depth": 4
+    },
+    "training": {
+    "batch_size": 2,
+    "num_epochs": 200,
+    "learning_rate": 1e-3,
+    "stft_loss_weight": 1.0,
+    "l1_loss_weight": 1.0,
+    "high_freq_weight": 3.0,
+    "scheduler_patience": 5,
+    "scheduler_factor": 0.5,
+    "save_checkpoint_epochs": 10,
+    "output_dir": "output"
+  },
+    "inference": {
+      "model_checkpoint": "output/checkpoints/model_epoch_150.pth",
+      "input_file": "output_chunk_1.wav",
+      "output_file": "output_48khz.wav"
+    }
+}

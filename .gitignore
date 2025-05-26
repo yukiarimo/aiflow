@@ -131,3 +131,5 @@ aiflow/models/kokoro/logs/*
 aiflow/models/kokoro/datasets/*
 !aiflow/models/kokoro/datasets/dataset_sample.json
 aiflow/models/kokoro/emotion_plots/*
+aiflow/models/handwriting/*
+aiflow/models/tadashi/watermark/*
