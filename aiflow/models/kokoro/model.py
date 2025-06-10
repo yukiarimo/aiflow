@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import os
-from aiflow.utils import get_text_embedding
 
 class SelfAttention(nn.Module):
     def __init__(self, embed_dim, num_heads=4):
@@ -314,7 +313,7 @@ class KokoroEmotionProcessor:
         self.tracker = EmotionalStateTracker(self.emotion_names)
         self.memory.update("<|begin_of_text|>")
 
-    def process_text(self, text_input):
+    def process_text(self, text_input, embedding=None):
         """Process text input and return emotional state.
 
         Args:
@@ -324,9 +323,12 @@ class KokoroEmotionProcessor:
             dict: Dictionary containing raw emotion values, smoothed emotion values, 
                  and memory summary
         """
+        if embedding is None:
+            raise ValueError("Embedding must be provided for text input")
+
         with torch.no_grad():
             # Get text embedding
-            input_embedding_np = get_text_embedding(text_input, self.config)
+            input_embedding_np = embedding
             input_embedding_tensor = torch.from_numpy(input_embedding_np).unsqueeze(0).to(torch.float32).to(self.device)
 
             # Get model predictions

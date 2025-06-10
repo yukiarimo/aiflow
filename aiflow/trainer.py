@@ -5,13 +5,9 @@ from unsloth import FastLanguageModel, UnslothTrainer, UnslothTrainingArguments
 from datasets import load_dataset
 from io import StringIO
 from peft import PeftModel
-
-# Conditional loading for Google Colab
 IN_COLAB = False
-try:
-    from google.colab import drive; IN_COLAB = True
-except ImportError:
-    pass
+try: from google.colab import drive; IN_COLAB = True
+except ImportError: pass
 
 # New class with model creation, LoRA setup, dataset preparation and training
 class YunaLLMTrainer:
