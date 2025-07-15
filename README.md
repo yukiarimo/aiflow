@@ -1,60 +1,49 @@
 # AiFlow
-AiFlow is a lightweight Python package that provides a simple and easy-to-use interface for building, evaluating, and training machine learning models. It is designed to quickly build and train models without adding the overhead of complex frameworks. With integrated support for LoRA enhancements, audio transcription, web scraping, and various text generation techniques, AiFlow offers a versatile toolkit for both research and production environments.
+AiFlow is a lightweight Python package that gives a simple, straightforward interface for building, evaluating, and training machine learning models.
 
-## Table of Content
+## Table of Contents
 - [AiFlow](#aiflow)
-  - [Table of Content](#table-of-content)
+  - [Table of Contents](#table-of-contents)
   - [Features](#features)
   - [Installation](#installation)
   - [Quick Start](#quick-start)
-  - [Documentation \& Usage](#documentation--usage)
-  - [Contributing](#contributing)
+- [Documentation \& Usage](#documentation--usage)
+  - [Contribute](#contribute)
   - [License](#license)
   - [Contact](#contact)
 
 ## Features
-- **Model Training & Inference:**  
-  Train state-of-the-art language models with support for LoRA. The [`YunaLLMTrainer`](aiflow/trainer.py) class provides methods for creating, training, and merging models.
-  
-- **Audio Data Processing:**  
-  Easily combine, split, and process audio files using the [`AudioDataWorker`](aiflow/data.py) class. Perform transcription with integrated ASR pipelines.
-  
-- **Text Data Processing:**  
-  Process and split large text files, count tokens, and convert between different formats using the [`TextDataWorker`](aiflow/data.py) class.
-  
-- **Web & HTML scraping:**  
-  Retrieve and clear web data for quick processing using helper functions from [`helper.py`](aiflow/helper.py).
-  
-- **Conditional Import Management:**  
-  Depending on configuration settings, AiFlow loads the necessary modules for tasks such as image model loading, voice synthesis, or text generation using advanced tokenization and LoRA techniques.
-  
-- **Extensible & Configurable:**  
-  Customize your project with the provided configuration system. Use the [`get_config`](aiflow/helper.py) function to load and manage settings.
+- Model Training & Inference
+- Text & Audio Data Processing
+- Web Scraping
+- Conditional Import Management
+- xtensible & Configurable and much more!
 
 ## Installation
 To install AiFlow, follow the steps below:
 
 1. Build the package:
-    ```bash
-    python setup.py sdist bdist_wheel
-    ```
-2. Install the package from the generated wheel:
-    ```bash
-    pip install dist/aiflow-2.0.0-py3-none-any.whl --force-reinstall
-    ```
+
+```bash
+python setup.py sdist bdist_wheel
+```
+
+1. Install the package from the generated wheel:
+
+```bash
+pip install dist/aiflow-2.0.0-py3-none-any.whl --force-reinstall
+```
 
 ## Quick Start
-You can train an LLM model using Colab Notebook provided in the repository.
+An LLM model can be trained and infered using the Colab Notebook made available in the repository.
 
-## Documentation & Usage
-Each module in AiFlow is fully documented with inline comments. Refer to file documentation for detailed usage:
-- Trainer Module
-- Helper Utilities
-- AGI Module
-- Data Processing
+# Documentation & Usage
+Each module in AiFlow has complete documentation along with inline comments that help in understanding its functionality. To obtain detailed information about the usage of each part, refer to the file documentation.
 
-## Contributing
-Contributions are welcome! For feature requests, bug reports, or other issues, please open an issue in the repository. If you would like to contribute code, please fork the repository and submit a pull request.
+> Note: The detailed documentation is coming soon for every module!
+
+## Contribute
+Contributing is welcome! For feature requests, bug reports, or other issues, please open an issue in the repo. If you would like to contribute code, please fork the repo and submit a pull request.
 
 ## License
 AiFlow is distributed under the OSI Approved Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International Public License.

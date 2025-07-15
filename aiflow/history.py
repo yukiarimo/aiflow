@@ -43,7 +43,9 @@ class ChatHistoryManager:
     def _get_template(self):
         return [
             {"name": self.config['ai']['names'][0], "text": "Hello", "data": None, "type": "text", "id": "msg-0"},
-            {"name": self.config['ai']['names'][1], "text": "Hi", "data": None, "type": "text", "id": "msg-1"}
+            {"name": self.config['ai']['names'][1], "text": "Hi", "data": None, "type": "text", "id": "msg-1"},
+            {"name": self.config['ai']['names'][0], "text": "How are you?", "data": None, "type": "text", "id": "msg-2"},
+            {"name": self.config['ai']['names'][1], "text": "I'm fine, thanks!", "data": None, "type": "text", "id": "msg-3"}
         ]
 
     def create_chat_history_file(self, username, chat_id):

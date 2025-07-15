@@ -39,6 +39,11 @@ def load_conditional_imports(config):
         globals()['generate'] = generate
         globals()['load'] = load
 
+    if text_mode == "mlxvlm":
+        from mlx_vlm import load, generate
+        globals()['generate'] = generate
+        globals()['load'] = load
+
     if config['ai'].get('audio'):
         from transformers import pipeline
         globals()['pipeline'] = pipeline
@@ -83,6 +88,8 @@ class AGIWorker:
             final_prompt = self.get_history_text(chat_history, text, useHistory, yunaConfig)
         else:
             final_prompt = text
+        
+        final_prompt = "<bos>\n<dialog>\n" + final_prompt
 
         if mode == "mlx":
             kwargs = {
@@ -93,7 +100,19 @@ class AGIWorker:
                 "quantized_kv_start": 0,
             }
 
-            text = self.text_model.generate(model=self.text_model, tokenizer=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
+            text = generate(model=self.text_model, tokenizer=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
+            return text
+        elif mode == "mlxvlm":
+            kwargs = {
+                "max_tokens": yunaConfig["ai"]["max_new_tokens"],
+                "temperature": yunaConfig["ai"]["temperature"],
+                "top_p": yunaConfig["ai"]["top_p"],
+                "top_k": yunaConfig["ai"]["top_k"],
+                "repetition_penalty": yunaConfig["ai"]["repetition_penalty"],
+                "stop": yunaConfig["ai"]["stop"],
+            }
+
+            text = generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
             return text
         elif mode in {"lmstudio", "koboldcpp"}:
             # Build payload dynamically using base/common sub-dicts.
@@ -178,11 +197,7 @@ class AGIWorker:
 
     def load_image_model(self):
         if self.config["ai"]["miru"]:
-            if self.config["server"]["miru_default_model"] == "":
-                raise ValueError("No default model set for miru")
-            elif not os.path.exists(self.config["server"]["miru_default_model"]):
-                raise FileNotFoundError(f"Model {self.config['server']['miru_default_model'][0]} not found")
-            elif self.config["server"]["yuna_miru_mode"] == "moondream":
+            if self.config["server"]["yuna_miru_mode"] == "moondream":
                 from llama_cpp import Llama
                 from llama_cpp.llama_chat_format import MoondreamChatHandler
 
@@ -201,8 +216,6 @@ class AGIWorker:
                     offload_kqv=self.config["ai"]["offload_kqv"],
                     verbose=False
                 )
-        else:
-            raise ValueError("Miru is not enabled")
 
     def capture_image(self, image_path=None, prompt=None):
         if not all([image_path, prompt, self.image_model]) or not os.path.exists(image_path):
@@ -245,6 +258,7 @@ class AGIWorker:
                 verbose=False
             )
         elif mode == "mlx": self.text_model, self.tokenizer =  load(self.config['server']['yuna_default_model'])
+        elif mode == "mlxvlm": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'])
 
     def load_kokoro_model(self, config, model_path): self.kokoro_model = kokoro_emotion_processor.KokoroEmotionProcessor(config, model_path)
 
