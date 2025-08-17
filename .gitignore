@@ -133,3 +133,6 @@ aiflow/models/kokoro/datasets/*
 aiflow/models/kokoro/emotion_plots/*
 aiflow/models/handwriting/*
 aiflow/models/tadashi/watermark/*
+aiflow/models/hanasu/monotonic_align/core.c
+aiflow/models/tadashi/*
+aiflow/models/kokoro/*

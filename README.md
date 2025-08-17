@@ -1,52 +1,31 @@
 # AiFlow
-AiFlow is a lightweight Python package that gives a simple, straightforward interface for building, evaluating, and training machine learning models.
+AiFlow is a lightweight Python package for inferencing, evaluating, and training machine learning models.
+
+[![Patreon](https://img.shields.io/badge/Patreon-F96854?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/YukiArimo)
+[![GitHub](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/yukiarimo)
+[![Discord](https://img.shields.io/badge/Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/users/1131657390752800899)
+[![Twitter](https://img.shields.io/badge/Twitter-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white)](https://twitter.com/yukiarimo)
 
 ## Table of Contents
 - [AiFlow](#aiflow)
   - [Table of Contents](#table-of-contents)
-  - [Features](#features)
   - [Installation](#installation)
-  - [Quick Start](#quick-start)
-- [Documentation \& Usage](#documentation--usage)
-  - [Contribute](#contribute)
+  - [Usage](#usage)
   - [License](#license)
   - [Contact](#contact)
 
-## Features
-- Model Training & Inference
-- Text & Audio Data Processing
-- Web Scraping
-- Conditional Import Management
-- xtensible & Configurable and much more!
-
 ## Installation
-To install AiFlow, follow the steps below:
-
-1. Build the package:
+To install AiFlow, run the following command:
 
 ```bash
-python setup.py sdist bdist_wheel
+pip install -e .
 ```
 
-1. Install the package from the generated wheel:
-
-```bash
-pip install dist/aiflow-2.0.0-py3-none-any.whl --force-reinstall
-```
-
-## Quick Start
-An LLM model can be trained and infered using the Colab Notebook made available in the repository.
-
-# Documentation & Usage
-Each module in AiFlow has complete documentation along with inline comments that help in understanding its functionality. To obtain detailed information about the usage of each part, refer to the file documentation.
-
-> Note: The detailed documentation is coming soon for every module!
-
-## Contribute
-Contributing is welcome! For feature requests, bug reports, or other issues, please open an issue in the repo. If you would like to contribute code, please fork the repo and submit a pull request.
+## Usage
+> Note: AiFlow is currently in development; 50% won't work. Hanasu TTS has migrated here, and Yuna Ai doesn't work yet. Please wait for the next release. To make it happen faster, please donate to support the development.
 
 ## License
-AiFlow is distributed under the OSI Approved Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International Public License.
+AiFlow is distributed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
 ## Contact
 For questions or support, please open an issue in the repository or contact the author at yukiarimo@gmail.com.

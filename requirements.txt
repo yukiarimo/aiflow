@@ -1,0 +1,9 @@
+Cython
+librosa
+matplotlib
+numpy
+phonemizer
+scipy
+tensorboard
+onnx
+onnxruntime
