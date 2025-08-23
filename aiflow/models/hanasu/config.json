@@ -10,7 +10,7 @@
     "batch_size": 35,
     "fp16_run": false,
     "lr_decay": 0.999875,
-    "segment_size": 16384,
+    "segment_size": 192000,
     "init_lr_ratio": 1,
     "warmup_epochs": 0,
     "c_mel": 45,

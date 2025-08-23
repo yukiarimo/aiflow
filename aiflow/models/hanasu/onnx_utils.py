@@ -1,13 +1,13 @@
 import torch
 from pathlib import Path
 from typing import Optional
-from hanasu import commons, utils
-from hanasu.models import load_model
-from hanasu.text import symbols
+from . import commons, utils
+from .models import load_model
+from .text import symbols
 import numpy as np
 import onnxruntime
 from scipy.io.wavfile import write
-from hanasu.data_utils import get_text
+from .data_utils import get_text
 
 def export_onnx(model_path: str, config_path: str, output: str) -> None:
     """

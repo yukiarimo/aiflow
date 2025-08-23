@@ -19,8 +19,7 @@ def get_config(config_path='static/config.json', config=None):
     default_config = {
         "ai": {
             "names": ["Yuki", "Yuna"],
-            "himitsu": False,
-            "emotions": False,
+            "kokoro": False,
             "miru": False,
             "audio": False,
             "mind": False,
@@ -46,11 +45,9 @@ def get_config(config_path='static/config.json', config=None):
             "url": "",
             "yuna_default_model": "lib/models/yuna/yuna-ai-v4-miru-mlx",
             "miru_default_model": ["lib/models/yuna/yuna-ai-v4-miru-q5_k_m.gguf", "lib/models/yuna/yuna-ai-v4-miru-eye-q5_k_m.gguf"],
-            "yuna_himitsu_model": "lib/models/yuna/himitsu-v1-mlx",
             "voice_model_config": ["lib/models/agi/hanasu/yuna-ai-voice-v1/config.json", "lib/models/agi/hanasu/yuna-ai-voice-v1/G_158000.pth"],
             "device": "mps",
             "yuna_text_mode": "mlxvlm",
-            "yuna_himitsu_mode": "mlx",
             "yuna_miru_mode": "mlxvlm",
             "yuna_audio_mode": "hanasu",
             "yuna_reference_audio": "static/audio/reference.wav"
@@ -80,11 +77,15 @@ def get_config(config_path='static/config.json', config=None):
         return json.load(f) if config is None else json.dump(config, f, indent=4)
 
 def clearText(text):
-    text = text.replace('</yuki>', '').replace('</yuna>', '').replace('<yuki>', '').replace('<yuna>', '')
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF]+', '', text)
-    text = re.sub(r':-?\)|:-?\(|;-?\)|:-?D|:-?P', '', text)
-    return ' '.join(text.split()).strip()
+    original_text = text
+    replacements = [('</yuki>', ''), ('</yuna>', ''), ('<yuki>', ''), ('<yuna>', '')]
+    for old, new in replacements: text = text.replace(old, new)
+    text = re.sub(r'<[^>]+>', '', text) # Remove all HTML/XML tags
+    text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF]+', '', text) # Remove Unicode emoji characters
+    text = re.sub(r':-?\)|:-?\(|;-?\)|:-?D|:-?P', '', text) # Remove text-based emoticons
+    text = ' '.join(text.split()).strip() # Normalize whitespace and strip leading/trailing spaces and newlines
+    if text != original_text: return clearText(text)
+    return text
 
 def search_web(query, base_url='https://www.google.com', process_data=False):
     """

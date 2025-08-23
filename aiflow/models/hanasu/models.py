@@ -1614,7 +1614,7 @@ def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_
         numpy.ndarray: Converted audio as numpy array
     """
     # Get model config
-    hps = model.hps if hasattr(model, 'hps') else hps
+    hps = model.hps.data if hasattr(model, 'hps') else hps
 
     max_wav_value = hps.data.max_wav_value
     filter_length = hps.data.filter_length

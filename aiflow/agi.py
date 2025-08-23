@@ -3,7 +3,7 @@ import os
 import uuid
 import torch
 import requests
-from aiflow.utils import get_config, clearText, search_web, load_config
+from aiflow.utils import get_config, clearText, search_web
 from pydub import AudioSegment
 from scipy.io.wavfile import write
 
@@ -14,24 +14,8 @@ def load_conditional_imports(config):
     Args:
         config (dict): Application configuration dictionary
     """
-    if config["ai"].get("himitsu"):
-        from aiflow.models.kokorox.model import KokoroXProcessor, kokorox_model
-        from aiflow.models.kokoro.model import KokoroEmotionProcessor
-        from aiflow.utils import get_text_embedding, load_kokorox_model, load_kokoro_model
-        globals()['KokoroXProcessor'] = KokoroXProcessor
-        globals()['kokorox_model'] = kokorox_model
-        globals()['load_kokorox_model'] = load_kokorox_model
-        globals()['load_kokoro_model'] = load_kokoro_model
-        globals()['KokoroEmotionProcessor'] = KokoroEmotionProcessor
 
-    if config["ai"].get("emotions"):
-        from aiflow.models.kokoro.model import KokoroEmotionProcessor
-        from aiflow.utils import get_text_embedding, load_kokoro_model
-        from aiflow.models.kokoro import model as kokoro_emotion_processor
-        globals()['KokoroEmotionProcessor'] = KokoroEmotionProcessor
-        globals()['get_text_embedding'] = get_text_embedding
-        globals()['load_kokoro_model'] = load_kokoro_model
-        globals()['kokoro_emotion_processor'] = kokoro_emotion_processor
+    if config["ai"].get("kokoro"): print("Kokoro is not available in this environment.")
 
     text_mode = config["server"].get("yuna_text_mode")
     if text_mode == "mlx":
@@ -55,22 +39,20 @@ def load_conditional_imports(config):
         from elevenlabs.client import ElevenLabs
         globals()['ElevenLabs'] = ElevenLabs
     elif audio_mode == "hanasu":
-        from hanasu.models import inference, load_model
-        globals()['load_model'] = load_model
-        globals()['inference'] = inference
+        from hanasu.models import inference as inference_hanasu
+        from hanasu.models import load_model as load_model_hanasu
+        globals()['load_model'] = inference_hanasu
+        globals()['inference'] = load_model_hanasu
 
 class AGIWorker:
     def __init__(self, config=None):
         self.config = get_config() if config is None else config
         self.text_model = None
-        self.himitsu_model = None
         self.tokenizer = None
         self.image_model = None
         self.voice_model = None
         self.audio_model = None
         self.kokoro_model = None
-        self.kokoro_x_model = None
-        self.kokoro_x_processor = None
         load_conditional_imports(self.config)
 
     def get_history_text(self, chat_history, text, useHistory, yunaConfig):
@@ -85,35 +67,33 @@ class AGIWorker:
         self.config = yunaConfig or self.config
         mode = self.config["server"]["yuna_text_mode"]
         if useHistory:
-            final_prompt = self.get_history_text(chat_history, text, useHistory, yunaConfig)
+            final_prompt = self.get_history_text(chat_history, clearText(text), useHistory, yunaConfig)
         else:
-            final_prompt = text
+            final_prompt = clearText(text)
         
-        final_prompt = "<bos>\n<dialog>\n" + final_prompt
+        final_prompt = "<bos>\n<dialog>\n" + final_prompt # remove <bos> ???
+
+        kwargs = {
+            "max_tokens": yunaConfig["ai"]["max_new_tokens"],
+            "temperature": yunaConfig["ai"]["temperature"],
+            "prefill_step_size": 2048,
+            "kv_group_size": 16,
+            "quantized_kv_start": 0,
+            "top_p": yunaConfig["ai"]["top_p"],
+            "top_k": yunaConfig["ai"]["top_k"],
+            "repetition_penalty": yunaConfig["ai"]["repetition_penalty"],
+            "repetition_context_size": 128,
+            "eos_tokens": ["</yuna>", "</yuki>", "</start_of_image>"],
+            "skip_special_tokens": True,
+            "stop": yunaConfig["ai"]["stop"]
+        }
 
         if mode == "mlx":
-            kwargs = {
-                "max_tokens": yunaConfig["ai"]["max_new_tokens"],
-                "temperature": yunaConfig["ai"]["temperature"],
-                "prefill_step_size": 2048,
-                "kv_group_size": 16,
-                "quantized_kv_start": 0,
-            }
-
             text = generate(model=self.text_model, tokenizer=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
-            return text
+            return clearText(text.text)
         elif mode == "mlxvlm":
-            kwargs = {
-                "max_tokens": yunaConfig["ai"]["max_new_tokens"],
-                "temperature": yunaConfig["ai"]["temperature"],
-                "top_p": yunaConfig["ai"]["top_p"],
-                "top_k": yunaConfig["ai"]["top_k"],
-                "repetition_penalty": yunaConfig["ai"]["repetition_penalty"],
-                "stop": yunaConfig["ai"]["stop"],
-            }
-
             text = generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
-            return text
+            return clearText(text.text)
         elif mode in {"lmstudio", "koboldcpp"}:
             # Build payload dynamically using base/common sub-dicts.
             common_payload = {
@@ -238,7 +218,7 @@ class AGIWorker:
         )
 
     def load_voice_model(self):
-        if self.config["server"]["yuna_audio_mode"] == "hanasu": self.voice_model = load_model(config_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}", model_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][1]}")
+        if self.config["server"]["yuna_audio_mode"] == "hanasu": self.voice_model = load_model_hanasu(config_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}", model_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][1]}")
 
     def load_text_model(self):
         mode = self.config["server"].get("yuna_text_mode")
@@ -260,32 +240,7 @@ class AGIWorker:
         elif mode == "mlx": self.text_model, self.tokenizer =  load(self.config['server']['yuna_default_model'])
         elif mode == "mlxvlm": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'])
 
-    def load_kokoro_model(self, config, model_path): self.kokoro_model = kokoro_emotion_processor.KokoroEmotionProcessor(config, model_path)
-
-    def load_kokorox_model(self, config, checkpoint_path=None):
-        """Load KokoroX processor with trained filter model."""
-        # Load Kokoro emotional model
-        self.kokoro_model = load_kokoro_model(config)
-
-        # Create KokoroX processor
-        self.kokoro_x_processor = kokorox_model.KokoroXProcessor(
-            config=config,
-            kokoro_model=self.kokoro_model,
-            embedding_function=get_text_embedding
-        )
-
-        if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=self.kokoro_x_processor.device)
-            if 'model_state_dict' in checkpoint:
-                self.kokoro_x_processor.content_filter.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                self.kokoro_x_processor.content_filter.load_state_dict(checkpoint)
-            print(f"Loaded content filter from {checkpoint_path}")
-        else:
-            print(f"Warning: No checkpoint found at {checkpoint_path}, using untrained model")
-
-    def load_himitsu_model(self, config):
-        if config["server"]["yuna_himitsu_mode"] == "mlx": self.himitsu_model, self.tokenizer =  load(config['server']['himitsu_default_model'])
+    def load_kokoro_model(self, config, model_path): print("Kokoro is not available in this environment.")
 
     def export_audio(self, input_file, output_filename): AudioSegment.from_file(input_file).export(output_filename, format="mp3")
     def transcribe_audio(self, audio_file): return self.yunaListen(audio_file, chunk_length_s=30, batch_size=60, return_timestamps=False)['text']
@@ -304,7 +259,7 @@ class AGIWorker:
             os.system(f'say -v {ref_audio} -o {temp} {repr(text)}')
             self.export_audio(temp, output_filename)
         elif mode == "hanasu":
-            result = inference(
+            result = inference_hanasu(
                 model=self.voice_model,
                 text=text,
                 noise_scale=0.2,
@@ -327,50 +282,10 @@ class AGIWorker:
 
     def processTextFile(self, text_file, question, temperature): pass # implement Himitsu text processing and analysis
 
-    def kokorox_text_filter(question, text_data, target_emotions=None, token_limit=None, config_path='config.json', checkpoint_path=None):
-        """
-        Process text data with KokoroX model and return filtered result.
-
-        Args:
-            question (str): The question or prompt for processing
-            text_data (str): The text data to be processed
-            target_emotions (list): List of target emotions to consider
-            token_limit (int): Maximum number of tokens in output
-            config_path (str): Path to config file
-            checkpoint_path (str): Path to model checkpoint
-
-        Returns:
-            str: The filtered text result
-        """
-        # Load config
-        config = load_config(config_path)
-
-        # Load model
-        processor = load_kokorox_model(config, checkpoint_path)
-
-        # Set default emotions if not provided
-        if target_emotions is None:
-            target_emotions = config['emotion_names']
-        else:
-            # Validate emotions
-            valid_emotions = []
-            for emotion in target_emotions:
-                if emotion in config['emotion_names']:
-                    valid_emotions.append(emotion)
-                else:
-                    print(f"Warning: Unknown emotion '{emotion}', ignoring")
-            target_emotions = valid_emotions if valid_emotions else config['emotion_names']
-
-        # Override token limit if specified
-        if token_limit:
-            processor.target_token_limit = token_limit
-
-        # Process the data
-        result = processor.process(question, text_data, target_emotions)
+    def kokorox_text_filter(question, text):
+        result = "Not available in this environment."
 
         return result
-
-    def get_emotional_trigger(self, text): return self.kokoro_model.process_text(text, get_text_embedding(text, self.config))
 
     def web_search(self, search_query):
         answer, search_results, image_urls = search_web(search_query)
@@ -387,8 +302,5 @@ class AGIWorker:
             self.load_audio_model()
         if self.config["ai"]["hanasu"]:
             self.load_voice_model()
-        if self.config["ai"]["emotions"]:
+        if self.config["ai"]["kokoro"]:
             self.load_kokoro_model()
-        if self.config["ai"]["himitsu"]:
-            self.load_kokorox_model(self.config)
-            self.load_himitsu_model(self.config)

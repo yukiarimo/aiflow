@@ -56,6 +56,7 @@ class ChatHistoryManager:
             self._get_memory_storage(username)[str(chat_id)] = template
 
     def save_chat_history(self, chat_history, username, chat_id):
+        print(chat_history)
         if self.use_file:
             self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(chat_history))
         else:
