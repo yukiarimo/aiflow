@@ -1,317 +1,140 @@
-import json
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from model import EmotionalModel
-from aiflow.utils import load_config, create_dataloader
-from tqdm import tqdm
+from torch.utils.data import Dataset, DataLoader, random_split
+import json
 import os
+from tqdm import tqdm
 import matplotlib.pyplot as plt
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from sklearn.model_selection import train_test_split
+from model import KokoroModel, EmbeddingGenerator
 
-class EmotionalLoss(nn.Module):
-    """Loss function for emotional prediction with emotion-specific weighting"""
-    def __init__(self, emotion_names, weights=None):
-        super().__init__()
-        self.emotion_names = emotion_names
-        self.num_emotions = len(emotion_names)
+class EmotionalDataset(Dataset):
+    """A clean dataset that returns embeddings and raw targets."""
+    def __init__(self, config, embed_generator):
+        self.config = config
+        self.emotion_names = config["emotion_names"]
+        with open(config["dataset_path"], 'r') as f:
+            self.data = json.load(f)
 
-        # Default to equal weights if not provided
-        if weights is None:
-            self.weights = {name: 1.0 for name in emotion_names}
-        else:
-            self.weights = weights
+        print("Pre-computing all embeddings for the dataset...")
+        self.embeddings = [
+            (
+                embed_generator.get_embedding(item["memory"]),
+                embed_generator.get_embedding(item["input"])
+            )
+            for item in tqdm(self.data, desc="Generating embeddings")
+        ]
+        self.targets = torch.tensor([[item["state"][name] for name in self.emotion_names] for item in self.data], dtype=torch.float32)
 
-    def forward(self, predictions, targets):
-        """Calculate weighted loss across emotions"""
-        # Ensure both inputs have same shape [batch_size, num_emotions]
-        batch_size = predictions.shape[0]
-        target_batch_size = targets.shape[0]
+    def __len__(self): return len(self.data)
 
-        # Handle batch size mismatch by adapting targets to match predictions
-        if batch_size != target_batch_size:
-            print(f"Warning: Batch size mismatch! Predictions: {batch_size}, Targets: {target_batch_size}")
-            if batch_size == 1 and target_batch_size > 1:
-                # Broadcast single prediction to match target batch size
-                predictions = predictions.expand(target_batch_size, -1)
-            elif target_batch_size == 1 and batch_size > 1:
-                # Broadcast single target to match prediction batch size
-                targets = targets.expand(batch_size, -1)
-            else:
-                # More complex mismatch - use only the common elements
-                min_batch = min(batch_size, target_batch_size)
-                predictions = predictions[:min_batch]
-                targets = targets[:min_batch]
-
-        # Reshape targets if necessary
-        if targets.dim() == 1 and predictions.dim() == 2:
-            # If target is [num_emotions] and pred is [batch_size, num_emotions]
-            targets = targets.unsqueeze(0).expand(batch_size, -1)
-        elif targets.dim() == 3 and predictions.dim() == 2:
-            # If target is [batch_size, 1, num_emotions]
-            targets = targets.squeeze(1)
-
-        # Use MSE loss for simplicity
-        mse_loss = nn.functional.mse_loss(predictions, targets, reduction='none')
-
-        # Apply weights for each emotion dimension
-        weighted_loss = 0.0
-        for i, emotion in enumerate(self.emotion_names):
-            emotion_loss = mse_loss[:, i].mean()
-            weighted_loss += self.weights[emotion] * emotion_loss
-
-        return weighted_loss / self.num_emotions
-
-def prepare_dataset(data_path, test_size=0.01, random_state=42, max_samples=1000):
-    """Split dataset into train and validation sets"""
-    with open(data_path, 'r') as f:
-        data = json.load(f)
-
-    # Limit dataset size for faster testing
-    if max_samples and len(data) > max_samples:
-        print(f"Limiting dataset to {max_samples} samples (out of {len(data)})")
-        data = data[:max_samples]
-
-    # For very small datasets, ensure at least one sample in each split
-    if len(data) <= 3:
-        test_size = 1/len(data)
-
-    train_data, val_data = train_test_split(data, test_size=test_size, random_state=random_state)
-
-    # Save the split datasets
-    with open("train_data.json", "w") as f:
-        json.dump(train_data, f, indent=4)
-    with open("val_data.json", "w") as f:
-        json.dump(val_data, f, indent=4)
-
-    print(f"Dataset split: {len(train_data)} training samples, {len(val_data)} validation samples")
-    return "train_data.json", "val_data.json"
+    def __getitem__(self, idx):
+        memory_emb, input_emb = self.embeddings[idx]
+        return torch.from_numpy(memory_emb), torch.from_numpy(input_emb), self.targets[idx]
 
 def train(config):
-    # Create output directories
-    os.makedirs("checkpoints", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
-
-    # Get model name for checkpoints
-    model_name = config.get("model_name")
-    model_name_inside = config.get("model_name")
-
-    # Prepare datasets
-    train_path, val_path = prepare_dataset("dataset.json", max_samples=1000000)
-
-    # Setup device
-    device = config["device"]
+    device = torch.device(config['device'] if torch.cuda.is_available() or torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
+    torch.manual_seed(42)
 
-    # Calculate appropriate batch sizes based on dataset sizes
-    with open(train_path, 'r') as f:
-        train_size = len(json.load(f))
-    with open(val_path, 'r') as f:
-        val_size = len(json.load(f))
+    embed_generator = EmbeddingGenerator(config)
+    dataset = EmotionalDataset(config, embed_generator)
 
-    train_batch_size = max(8, min(config["batch_size"], train_size // 100))
-    val_batch_size = max(8, min(config["batch_size"], val_size // 10))
+    val_size = max(1, int(0.1 * len(dataset)))
+    train_size = len(dataset) - val_size
 
-    print(f"Using batch sizes: {train_batch_size} (train), {val_batch_size} (val)")
+    print(f"Dataset size: {len(dataset)}. Training on {train_size}, validating on {val_size}.")
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    # Create dataloaders (only once)
-    train_dataloader = create_dataloader(train_path, config, shuffle=True, batch_size=train_batch_size)
-    val_dataloader = create_dataloader(val_path, config, shuffle=False, batch_size=val_batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], num_workers=0)
 
-    # Initialize model
-    model = EmotionalModel(config).to(device)
+    model = KokoroModel(config).to(device)
+    # Load pre-trained weights if available
+    if config.get("pretrained_model_path") and os.path.isfile(config["pretrained_model_path"]):
+        model.load_state_dict(torch.load(config["pretrained_model_path"], map_location=device))
+        print(f"Loaded pre-trained model from {config['pretrained_model_path']}")
+    criterion = nn.MSELoss()
 
-    # Optimizer with weight decay for regularization
-    optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=1e-4)
+    base_lr = config["learning_rate"]
+    optimizer = optim.AdamW(model.parameters(), lr=base_lr, weight_decay=config["weight_decay"])
 
-    # Learning rate scheduler for better convergence
-    scheduler = CosineAnnealingLR(optimizer, T_max=config["epochs"], eta_min=config["learning_rate"] * 0.01)
+    warmup_epochs = config["lr_warmup_epochs"]
+    t_max = config["epochs"] - warmup_epochs
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, t_max))
 
-    # Custom weighted loss - can adjust weights if needed
-    emotion_weights = {name: 1.0 for name in config["emotion_names"]}
-    criterion = EmotionalLoss(config["emotion_names"], emotion_weights)
-
-    # Training tracking
     best_val_loss = float('inf')
-    train_losses = []
-    val_losses = []
+    history = {"train_loss": [], "val_loss": [], "lr": []}
     patience_counter = 0
-    patience = 10  # Early stopping after 10 epochs without improvement
 
     for epoch in range(config["epochs"]):
-        # Training phase
         model.train()
-        train_loss = 0
-        progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{config['epochs']} [Train]")
+        total_train_loss = 0
 
-        batch_count = 0
-        for memory_emb_batch, input_emb_batch, target_state_batch in progress_bar:
-            batch_count += 1
+        if epoch < warmup_epochs:
+            lr_scale = (epoch + 1) / warmup_epochs
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = base_lr * lr_scale
 
-            try:
-                # Move tensors to device with proper shape handling
-                memory_emb_batch = memory_emb_batch.to(torch.float32).to(device)
-                input_emb_batch = input_emb_batch.to(torch.float32).to(device)
-                target_state_batch = target_state_batch.to(torch.float32).to(device)
+        train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['epochs']}")
+        for memory_emb, input_emb, targets in train_bar:
+            memory_emb, input_emb, targets = memory_emb.to(device), input_emb.to(device), targets.to(device)
+            optimizer.zero_grad()
+            predictions_dict, _ = model(input_emb, memory_emb)
+            predictions_tensor = torch.stack([predictions_dict[name] for name in config["emotion_names"]], dim=1)
+            loss = criterion(predictions_tensor, targets)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            total_train_loss += loss.item()
+            train_bar.set_postfix(loss=f"{loss.item():.4f}")
 
-                # Zero gradients
-                optimizer.zero_grad()
+        avg_train_loss = total_train_loss / len(train_loader)
+        history["train_loss"].append(avg_train_loss)
+        history["lr"].append(optimizer.param_groups[0]['lr'])
 
-                # Forward pass
-                emotion_outputs, _ = model(input_emb_batch)
-                predicted_states = torch.cat([emotion_outputs[emotion_name] for emotion_name in config["emotion_names"]], dim=1)
-
-                # Calculate loss - with improved handling
-                loss = criterion(predicted_states, target_state_batch)
-
-                # Check for NaN loss
-                if torch.isnan(loss):
-                    print("Warning: NaN loss detected! Using alternate loss calculation.")
-                    # Try a simpler loss function as fallback
-                    loss = torch.nn.functional.l1_loss(predicted_states, target_state_batch)
-
-                    if torch.isnan(loss):
-                        print("Still getting NaN loss. Skipping this batch.")
-                        continue
-
-                # Backward pass
-                loss.backward()
-
-                # Gradient clipping to prevent exploding gradients
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-
-                # Update weights
-                optimizer.step()
-
-                # Update stats
-                train_loss += loss.item()
-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
-
-            except RuntimeError as e:
-                print(f"Error in batch {batch_count}: {str(e)}")
-                continue
-
-        if batch_count > 0:
-            avg_train_loss = train_loss / batch_count
-            train_losses.append(avg_train_loss)
-        else:
-            print("Warning: No valid batches in training!")
-            avg_train_loss = float('nan')
-            train_losses.append(avg_train_loss)
-
-        # Validation phase with the same error checking
         model.eval()
-        val_loss = 0
-        val_batch_count = 0
-
+        total_val_loss = 0
         with torch.no_grad():
-            progress_bar = tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{config['epochs']} [Val]")
-            for memory_emb_batch, input_emb_batch, target_state_batch in progress_bar:
-                try:
-                    val_batch_count += 1
-                    # Move tensors to device with proper type conversion
-                    memory_emb_batch = memory_emb_batch.to(torch.float32).to(device)
-                    input_emb_batch = input_emb_batch.to(torch.float32).to(device)
+            for memory_emb, input_emb, targets in val_loader:
+                memory_emb, input_emb, targets = memory_emb.to(device), input_emb.to(device), targets.to(device)
+                predictions_dict, _ = model(input_emb, memory_emb)
+                predictions_tensor = torch.stack([predictions_dict[name] for name in config["emotion_names"]], dim=1)
+                loss = criterion(predictions_tensor, targets)
+                total_val_loss += loss.item()
 
-                    # Ensure target is a 2D tensor [batch_size, num_emotions]
-                    if target_state_batch.dim() == 3:
-                        target_state_batch = target_state_batch.squeeze(1)
-                    target_state_batch = target_state_batch.to(torch.float32).to(device)
+        avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else float('inf')
+        history["val_loss"].append(avg_val_loss)
 
-                    # Forward pass
-                    emotion_outputs, _ = model(input_emb_batch)
-                    predicted_states = torch.cat([emotion_outputs[emotion_name] for emotion_name in config["emotion_names"]], dim=1)
+        if epoch >= warmup_epochs: scheduler.step()
 
-                    # Calculate loss - safely
-                    loss = criterion(predicted_states, target_state_batch)
+        print(f"Epoch {epoch+1}/{config['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {optimizer.param_groups[0]['lr']:.6f}")
 
-                    if not torch.isnan(loss):
-                        val_loss += loss.item()
-
-                except RuntimeError as e:
-                    print(f"Error in validation batch {val_batch_count}: {str(e)}")
-                    continue
-
-        if val_batch_count > 0:
-            avg_val_loss = val_loss / val_batch_count
-            val_losses.append(avg_val_loss)
-        else:
-            print("Warning: No valid batches in validation!")
-            avg_val_loss = float('nan')
-            val_losses.append(avg_val_loss)
-
-        # Update learning rate
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
-
-        print(f"Epoch {epoch+1}/{config['epochs']}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, LR: {current_lr:.6f}")
-
-        # Only save checkpoint if loss is valid
-        if not torch.isnan(torch.tensor(avg_val_loss)) and avg_val_loss < best_val_loss:
+        if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
-
-            # Save best model with model name
-            torch.save({
-                'model_name': model_name_inside,
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': avg_train_loss,
-                'val_loss': avg_val_loss,
-                'config': config
-            }, f"checkpoints/{model_name}_best_model.pth")
-
-            print(f"New best model saved with validation loss: {avg_val_loss:.4f}")
+            os.makedirs("checkpoints", exist_ok=True)
+            model_path = f"checkpoints/{config['model_name']}_best.pth"
+            torch.save(model.state_dict(), model_path)
+            print(f"✓ New best model saved (Val Loss: {best_val_loss:.4f})")
         else:
             patience_counter += 1
-            print(f"Validation loss did not improve. Patience: {patience_counter}/{patience}")
+            if patience_counter >= config["early_stopping_patience"]:
+                print("Early stopping triggered.")
+                break
 
-        # Early stopping
-        if patience_counter >= patience:
-            print(f"Early stopping triggered after {epoch+1} epochs")
-            break
-
-        # Save checkpoint every 5 epochs
-        if (epoch + 1) % 5 == 0:
-            torch.save({
-                'model_name': model_name_inside,
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': avg_train_loss,
-                'val_loss': avg_val_loss,
-                'config': config
-            }, f"checkpoints/{model_name}_epoch_{epoch+1}.pth")
-
-    # Save final model with model name
-    torch.save({
-        'model_name': model_name_inside,
-        'model_state_dict': model.state_dict(),
-        'config': config
-    }, f"{model_name}_final.pth")
-
-    # Plot training progress (filter out NaN values for plotting)
-    plt.figure(figsize=(10, 6))
-    train_losses_clean = [x for x in train_losses if not np.isnan(x)]
-    val_losses_clean = [x for x in val_losses if not np.isnan(x)]
-    plt.plot(range(len(train_losses_clean)), train_losses_clean, label='Training Loss')
-    plt.plot(range(len(val_losses_clean)), val_losses_clean, label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title(f'{model_name} Training Progress')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(f'logs/{model_name}_training_progress.png')
-
-    print(f"Training complete. Final model saved to {model_name}_final.pth")
-    if not np.isnan(best_val_loss):
-        print(f"Best validation loss: {best_val_loss:.4f}")
-    else:
-        print("Warning: Best validation loss was NaN. Model may not have trained properly.")
+    # Plotting training history
+    _, ax1 = plt.subplots(figsize=(12, 6))
+    ax1.plot(history["train_loss"], label="Training Loss")
+    ax1.plot(history["val_loss"], label="Validation Loss")
+    ax1.set_xlabel("Epoch"), ax1.set_ylabel("MSE Loss"), ax1.legend(loc='upper left'), ax1.grid(True)
+    ax2 = ax1.twinx()
+    ax2.plot(history["lr"], label="Learning Rate", color='tab:green', linestyle='--')
+    ax2.set_ylabel("Learning Rate"), ax2.legend(loc='upper right')
+    plt.title(f"{config['model_name']} Training Progress")
+    plt.savefig(f"{config['model_name']}-training-progress.png")
+    print(f"Training plot saved to {config['model_name']}-training-progress.png")
 
 if __name__ == "__main__":
-    config = load_config()
+    with open("config.json", 'r') as f: config = json.load(f)
     train(config)

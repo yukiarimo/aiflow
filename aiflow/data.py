@@ -270,6 +270,6 @@ class TextDataWorker:
         from docx import Document
         doc = Document(input_file)
         with open(output_file, 'w') as f:
-            f.write(''.join([f"**{run.text}**" if run.italic else run.text 
-                           for para in doc.paragraphs 
+            f.write(''.join([f"**{run.text}**" if run.italic else run.text
+                           for para in doc.paragraphs
                            for run in para.runs] + ['\n' for _ in doc.paragraphs]))

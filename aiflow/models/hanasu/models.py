@@ -1364,44 +1364,6 @@ class SynthesizerTrn(nn.Module):
         o_hat = self.dec(z_hat * y_mask, g=g_tgt)
         return o_hat, y_mask, (z, z_p, z_hat)
 
-    def infer_custom_durations(self, x, x_lengths, sid, durations, noise_scale=0.667):
-        if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)
-        else:
-            g = None
-
-        # Encoder part
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
-
-        # Use provided durations instead of predicting them
-        # durations should be a tensor of shape [1, 1, t_x]
-        w_ceil = durations.unsqueeze(0).unsqueeze(0).to(x.device)
-
-        if w_ceil.shape[2] != x.shape[2]:
-            print(f"Warning: Mismatch in phoneme count and duration count. Phonemes: {x.shape[2]}, Durations: {w_ceil.shape[2]}")
-            # Truncate or pad durations to match phoneme length
-            if w_ceil.shape[2] > x.shape[2]:
-                w_ceil = w_ceil[:, :, :x.shape[2]]
-            else:
-                padding = torch.zeros((1, 1, x.shape[2] - w_ceil.shape[2]), device=x.device, dtype=w_ceil.dtype)
-                w_ceil = torch.cat([w_ceil, padding], dim=2)
-
-        y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-        y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
-        attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-        attn = commons.generate_path(w_ceil, attn_mask)
-
-        # expand prior
-        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
-
-        # Posterior part
-        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-        z = self.flow(z_p, y_mask, g=g, reverse=True)
-        o = self.dec((z * y_mask), g=g)
-
-        return o
-
 def _split_sentences(text):
     """Split text into sentences by . ! ? with basic cleaning"""
     # Replace newlines and normalize whitespace
@@ -1601,7 +1563,7 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
 def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_id=0, target_speaker_id=1, device="mps", hps=None):
     """
     Perform voice conversion from source speaker to target speaker.
-    
+
     Args:
         model: Loaded SynthesizerTrn model
         source_wav_path: Path to source audio file
@@ -1609,7 +1571,7 @@ def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_
         target_speaker_id: ID of target speaker
         device: Device to run inference on ("mps", "cuda", "cpu")
         output_file: Optional path to save output audio file
-        
+
     Returns:
         numpy.ndarray: Converted audio as numpy array
     """
@@ -1627,11 +1589,11 @@ def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_
 
     # Load and preprocess audio
     audio, sr = load_wav_to_torch(source_wav_path)
-    
+
     # Normalize audio to [-1, 1] range
     audio_norm = audio / max_wav_value
     audio_norm = audio_norm.unsqueeze(0)
-    
+
     # Convert audio to mel spectrogram
     mel = mel_spectrogram_torch(
         audio_norm,
@@ -1644,23 +1606,23 @@ def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_
         mel_fmax,
         center=False,
     )
-    
+
     # Perform voice conversion
     with torch.no_grad():
         y = mel.to(device)
         y_lengths = torch.LongTensor([y.shape[2]]).to(device)
         sid_src = torch.LongTensor([source_speaker_id]).to(device)
         sid_tgt = torch.LongTensor([target_speaker_id]).to(device)
-        
+
         print(f"Performing voice conversion from speaker {source_speaker_id} to {target_speaker_id}...")
-        
+
         # Call the voice conversion method
         audio_out, _, _ = model.voice_conversion(
             y, y_lengths, sid_src=sid_src, sid_tgt=sid_tgt
         )
-        
+
         print("Voice conversion complete.")
-    
+
     # Get the audio data, convert to numpy
     output_audio = audio_out[0, 0].data.cpu().float().numpy()
 

@@ -33,12 +33,7 @@ def load_conditional_imports(config):
         globals()['pipeline'] = pipeline
 
     audio_mode = config['server'].get('yuna_audio_mode')
-    if audio_mode == "11labs":
-        from elevenlabs import VoiceSettings
-        globals()['VoiceSettings'] = VoiceSettings
-        from elevenlabs.client import ElevenLabs
-        globals()['ElevenLabs'] = ElevenLabs
-    elif audio_mode == "hanasu":
+    if audio_mode == "hanasu":
         from hanasu.models import inference as inference_hanasu
         from hanasu.models import load_model as load_model_hanasu
         globals()['load_model'] = inference_hanasu
@@ -57,8 +52,7 @@ class AGIWorker:
 
     def get_history_text(self, chat_history, text, useHistory, yunaConfig):
         user, asst = yunaConfig["ai"]["names"][0].lower(), yunaConfig["ai"]["names"][1].lower()
-        history = ''.join([f"<{user if m['name'].lower() == user else asst}>{m['text']}</{user if m['name'].lower() == user else asst}>\n" 
-                          for m in (chat_history or [])] if useHistory else '')
+        history = ''.join([f"<{user if m['name'].lower() == user else asst}>{m['text']}</{user if m['name'].lower() == user else asst}>\n" for m in (chat_history or [])] if useHistory else '')
         current = text.get('text') if isinstance(text, dict) else text
         final = f"{history}<{user}>{current}</{user}>\n<{asst}>"
         return final
@@ -66,11 +60,9 @@ class AGIWorker:
     def generate_text(self, text=None, kanojo=None, chat_history=None, useHistory=True, yunaConfig=None, stream=False):
         self.config = yunaConfig or self.config
         mode = self.config["server"]["yuna_text_mode"]
-        if useHistory:
-            final_prompt = self.get_history_text(chat_history, clearText(text), useHistory, yunaConfig)
-        else:
-            final_prompt = clearText(text)
-        
+        if useHistory: final_prompt = self.get_history_text(chat_history, clearText(text), useHistory, yunaConfig)
+        else: final_prompt = clearText(text)
+
         final_prompt = "<bos>\n<dialog>\n" + final_prompt # remove <bos> ???
 
         kwargs = {
@@ -94,8 +86,7 @@ class AGIWorker:
         elif mode == "mlxvlm":
             text = generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
             return clearText(text.text)
-        elif mode in {"lmstudio", "koboldcpp"}:
-            # Build payload dynamically using base/common sub-dicts.
+        elif mode == "koboldcpp":
             common_payload = {
                 "temperature": yunaConfig["ai"]["temperature"],
                 "top_p": yunaConfig["ai"]["top_p"],
@@ -104,109 +95,59 @@ class AGIWorker:
                 "logit_bias": {},
                 "presence_penalty": 0,
             }
-            if mode == "lmstudio":
-                specific = {
-                    "model": self.config["server"]["yuna_default_model"],
-                    "max_tokens": -1,
-                    "stop": yunaConfig["ai"]["stop"],
-                    "frequency_penalty": 0,
-                    "repeat_penalty": yunaConfig["ai"]["repetition_penalty"],
-                    "seed": yunaConfig["ai"]["seed"],
-                    "messages": final_prompt,
-                }
-                payload = {**common_payload, **specific}
-                url = "http://localhost:1234/v1/chat/completions"
-            elif mode == "koboldcpp":
-                specific = {
-                    "n": 1,
-                    "max_context_length": yunaConfig["ai"]["context_length"],
-                    "max_length": yunaConfig["ai"]["max_new_tokens"],
-                    "rep_pen": yunaConfig["ai"]["repetition_penalty"],
-                    "top_a": 0,
-                    "typical": 1,
-                    "tfs": 0.8,
-                    "rep_pen_range": 512,
-                    "rep_pen_slope": 0,
-                    "sampler_order": [6, 5, 0, 2, 3, 1, 4],
-                    "memory": kanojo if kanojo is not None else "",
-                    "trim_stop": True,
-                    "genkey": "KCPP9126",
-                    "mirostat": 2,
-                    "mirostat_tau": 4,
-                    "mirostat_eta": 0.3,
-                    "dynatemp_range": 0,
-                    "dynatemp_exponent": 1,
-                    "smoothing_factor": 0,
-                    "banned_tokens": [],
-                    "render_special": True,
-                    "quiet": True,
-                    "stop_sequence": yunaConfig["ai"]["stop"],
-                    "use_default_badwordsids": False,
-                    "bypass_eos": False,
-                    "prompt": final_prompt,
-                }
-                payload = {**common_payload, **specific}
-                url = "http://localhost:5001/api/extra/generate/stream/" if stream else "http://localhost:5001/api/v1/generate/"
+            specific = {
+                "n": 1,
+                "max_context_length": yunaConfig["ai"]["context_length"],
+                "max_length": yunaConfig["ai"]["max_new_tokens"],
+                "rep_pen": yunaConfig["ai"]["repetition_penalty"],
+                "top_a": 0,
+                "typical": 1,
+                "tfs": 0.8,
+                "rep_pen_range": 512,
+                "rep_pen_slope": 0,
+                "sampler_order": [6, 5, 0, 2, 3, 1, 4],
+                "memory": kanojo if kanojo is not None else "",
+                "trim_stop": True,
+                "genkey": "KCPP9126",
+                "mirostat": 2,
+                "mirostat_tau": 4,
+                "mirostat_eta": 0.3,
+                "dynatemp_range": 0,
+                "dynatemp_exponent": 1,
+                "smoothing_factor": 0,
+                "banned_tokens": [],
+                "render_special": True,
+                "quiet": True,
+                "stop_sequence": yunaConfig["ai"]["stop"],
+                "use_default_badwordsids": False,
+                "bypass_eos": False,
+                "prompt": final_prompt,
+            }
+            payload = {**common_payload, **specific}
+            url = "http://localhost:5001/api/extra/generate/stream/" if stream else "http://localhost:5001/api/v1/generate/"
 
             response = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, stream=stream)
             if response.status_code == 200:
-                if mode == "lmstudio":
-                    resp = response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
-                    return (''.join(resp) if stream else clearText(resp))
-                else:  # koboldcpp
-                    if stream:
-                        def stream_generator():
-                            for line in response.iter_lines():
-                                if line:
-                                    decoded_line = line.decode('utf-8')
-                                    if decoded_line.startswith('data: '):
-                                        data = json.loads(decoded_line[6:])
-                                        yield data['token']
-                        return stream_generator()
+                if stream:
+                    def stream_generator():
+                        for line in response.iter_lines():
+                            if line:
+                                decoded_line = line.decode('utf-8')
+                                if decoded_line.startswith('data: '):
+                                    data = json.loads(decoded_line[6:])
+                                    yield data['token']
+                    return stream_generator()
+                else:
+                    response_json = response.json()
+                    if "results" in response_json and response_json["results"]:
+                        resp = response_json["results"][0].get('text', '')
+                        return clearText(resp)
                     else:
-                        response_json = response.json()
-                        if "results" in response_json and response_json["results"]:
-                            resp = response_json["results"][0].get('text', '')
-                            return clearText(resp)
-                        else:
-                            return ''
+                        return ''
             else:
                 return ''
         else:
             return ''
-
-    def load_image_model(self):
-        if self.config["ai"]["miru"]:
-            if self.config["server"]["yuna_miru_mode"] == "moondream":
-                from llama_cpp import Llama
-                from llama_cpp.llama_chat_format import MoondreamChatHandler
-
-                self.image_model = Llama(
-                    model_path=self.config['server']['miru_default_model'][0],
-                    chat_handler=MoondreamChatHandler(clip_model_path=self.config['server']['miru_default_model'][1]),
-                    n_ctx=4096,
-                    last_n_tokens_size=self.config["ai"]["last_n_tokens_size"],
-                    seed=self.config["ai"]["seed"],
-                    n_batch=self.config["ai"]["batch_size"],
-                    n_gpu_layers=self.config["ai"]["gpu_layers"],
-                    n_threads=self.config["ai"]["threads"],
-                    use_mmap=self.config["ai"]["use_mmap"],
-                    use_mlock=self.config["ai"]["use_mlock"],
-                    flash_attn=self.config["ai"]["flash_attn"],
-                    offload_kqv=self.config["ai"]["offload_kqv"],
-                    verbose=False
-                )
-
-    def capture_image(self, image_path=None, prompt=None):
-        if not all([image_path, prompt, self.image_model]) or not os.path.exists(image_path):
-            raise ValueError("Missing required inputs or image not found")
-
-        if self.config["server"]["yuna_miru_mode"] == "moondream":
-            result = self.image_model.create_chat_completion(messages=[
-                {"role": "system", "content": "You are an assistant who perfectly describes images and answers questions about them."},
-                {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"file://{os.path.join(os.getcwd(), image_path)}"}}]}
-            ])
-            return [clearText(result['choices'][0]['message']['content']), image_path]
 
     def load_audio_model(self):
         self.yunaListen = pipeline(
@@ -218,7 +159,7 @@ class AGIWorker:
         )
 
     def load_voice_model(self):
-        if self.config["server"]["yuna_audio_mode"] == "hanasu": self.voice_model = load_model_hanasu(config_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][0]}", model_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_model_config'][1]}")
+        if self.config["server"]["yuna_audio_mode"] == "hanasu": self.voice_model = load_model_hanasu(config_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_default_model'][0]}", model_path=f"{self.config['server']['voice_default_model']}/{self.config['server']['voice_default_model'][1]}")
 
     def load_text_model(self):
         mode = self.config["server"].get("yuna_text_mode")
@@ -247,7 +188,6 @@ class AGIWorker:
     def speak_text(self, text, output_filename=None):
         output_filename = f"static/audio/{uuid.uuid4()}.mp3"
         mode = self.config['server']['yuna_audio_mode']
-        ref_audio = self.config['server']['yuna_reference_audio']
 
         if mode == 'siri':
             temp = "temp.aiff"
@@ -256,7 +196,7 @@ class AGIWorker:
             os.remove(temp)
         elif mode == "siri-pv":
             temp = "static/audio/audio.aiff"
-            os.system(f'say -v {ref_audio} -o {temp} {repr(text)}')
+            os.system(f'say -v {self.config['server']['voice_default_model'][0]} -o {temp} {repr(text)}')
             self.export_audio(temp, output_filename)
         elif mode == "hanasu":
             result = inference_hanasu(
@@ -270,15 +210,6 @@ class AGIWorker:
             )
 
             write(data=result, rate=48000, filename="sample_vits2.wav")
-        elif mode == "11labs":
-            with open(output_filename, "wb") as f:
-                f.write(b''.join(ElevenLabs(api_key=self.config['security']['11labs_key']).generate(
-                    text=text, voice="Yuna Upgrade Use",
-                    voice_settings=VoiceSettings(stability=0.40, similarity_boost=1.00, style=0.00, use_speaker_boost=True),
-                    model="eleven_multilingual_v2", stream=False, output_format="mp3_44100_192"
-                )))
-
-            return '/' + output_filename if os.path.exists(output_filename) else None
 
     def processTextFile(self, text_file, question, temperature): pass # implement Himitsu text processing and analysis
 
@@ -296,8 +227,6 @@ class AGIWorker:
     def start(self):
         if self.config["ai"]["mind"]:
             self.load_text_model()
-        if self.config["ai"]["miru"]:
-            self.load_image_model()
         if self.config["ai"]["audio"]:
             self.load_audio_model()
         if self.config["ai"]["hanasu"]:

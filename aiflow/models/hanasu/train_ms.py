@@ -505,13 +505,13 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             y_lengths = y_lengths[:1]
             speakers = speakers[:1]
             break
-        
+
         # Check if we got any data from the eval_loader
         if x is None:
             print("Warning: eval_loader is empty, skipping evaluation")
             generator.train()
             return
-            
+
         y_hat, attn, mask, *_ = generator.module.infer(
             x, x_lengths, speakers, max_len=1000
         )

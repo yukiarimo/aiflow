@@ -20,7 +20,6 @@ def get_config(config_path='static/config.json', config=None):
         "ai": {
             "names": ["Yuki", "Yuna"],
             "kokoro": False,
-            "miru": False,
             "audio": False,
             "mind": False,
             "hanasu": False,
@@ -43,14 +42,11 @@ def get_config(config_path='static/config.json', config=None):
         },
         "server": {
             "url": "",
-            "yuna_default_model": "lib/models/yuna/yuna-ai-v4-miru-mlx",
-            "miru_default_model": ["lib/models/yuna/yuna-ai-v4-miru-q5_k_m.gguf", "lib/models/yuna/yuna-ai-v4-miru-eye-q5_k_m.gguf"],
-            "voice_model_config": ["lib/models/agi/hanasu/yuna-ai-voice-v1/config.json", "lib/models/agi/hanasu/yuna-ai-voice-v1/G_158000.pth"],
+            "yuna_default_model": ["lib/models/yuna/yuna-ai-v4-miru-loli-mlx"],
+            "voice_default_model": ["lib/models/agi/hanasu/config.json", "lib/models/agi/hanasu/G_46000.pth"],
             "device": "mps",
             "yuna_text_mode": "mlxvlm",
-            "yuna_miru_mode": "mlxvlm",
             "yuna_audio_mode": "hanasu",
-            "yuna_reference_audio": "static/audio/reference.wav"
         },
         "settings": {
             "fuctions": True,
@@ -62,11 +58,6 @@ def get_config(config_path='static/config.json', config=None):
             "default_history_file": "history_template:general.json",
             "default_kanojo": "Yuna"
         },
-        "security": {
-            "secret_key": "YourSecretKeyHere123!",
-            "encryption_key": "zWZnu-lxHCTgY_EqlH4raJjxNJIgPlvXFbdk45bca_I=",
-            "11labs_key": "Your11LabsKeyHere123!"
-        }
     }
 
     if not os.path.exists(config_path):
@@ -377,8 +368,8 @@ def _process_embedding_item(args):
 def create_dataloader(data_path, config, shuffle=True, cache_embeddings=True, batch_size=None):
     dataset = EmotionalDataset(data_path, config, cache_embeddings=cache_embeddings)
     dataloader = DataLoader(
-        dataset, 
-        batch_size=batch_size if batch_size is not None else config["batch_size"], 
+        dataset,
+        batch_size=batch_size if batch_size is not None else config["batch_size"],
         shuffle=shuffle,
         num_workers=0,  # Set to 0 for macOS compatibility
     )

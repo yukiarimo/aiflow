@@ -1,30 +1,19 @@
 import json
 import os
 from cryptography.fernet import Fernet, InvalidToken
-from aiflow import agi
 
 class ChatHistoryManager:
     def __init__(self, config, use_file=False):
         self.config = config
-        self.fernet = Fernet(self._get_encryption_key())
+        self.fernet = Fernet("zWZnu-lxHCTgY_EqlH4raJjxNJIgPlvXFbdk45bca_I=".encode())
         self.use_file = use_file
         self.memory_storage = {}  # Format: {username: {chat_id: history}}
 
-    def _get_encryption_key(self):
-        key = self.config['security'].get('encryption_key')
-        if not key:
-            key = Fernet.generate_key().decode()
-            self.config['security']['encryption_key'] = key
-            agi.get_config(self.config)
-        return key.encode()
-
     def _get_user_folder(self, username):
-        path = os.path.join("db/history", username)
-        os.makedirs(path, exist_ok=True)
-        return path
+        os.makedirs(os.path.join("db/history", username), exist_ok=True)
+        return os.path.join("db/history", username)
 
-    def _get_file_path(self, username, chat_id):
-        return os.path.join(self._get_user_folder(username), str(chat_id))
+    def _get_file_path(self, username, chat_id): return os.path.join(self._get_user_folder(username), str(chat_id))
 
     def _read_encrypted_file(self, path):
         try:
@@ -37,8 +26,7 @@ class ChatHistoryManager:
         with open(path, 'wb') as file:
             file.write(self.fernet.encrypt(data.encode()))
 
-    def _get_memory_storage(self, username):
-        return self.memory_storage.setdefault(username, {})
+    def _get_memory_storage(self, username): return self.memory_storage.setdefault(username, {})
 
     def _get_template(self):
         return [
@@ -49,18 +37,13 @@ class ChatHistoryManager:
         ]
 
     def create_chat_history_file(self, username, chat_id):
-        template = self._get_template()
-        if self.use_file:
-            self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(template))
-        else:
-            self._get_memory_storage(username)[str(chat_id)] = template
+        if self.use_file: self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(self._get_template()))
+        else: self._get_memory_storage(username)[str(chat_id)] = self._get_template()
 
     def save_chat_history(self, chat_history, username, chat_id):
         print(chat_history)
-        if self.use_file:
-            self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(chat_history))
-        else:
-            self._get_memory_storage(username)[str(chat_id)] = chat_history
+        if self.use_file: self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(chat_history))
+        else: self._get_memory_storage(username)[str(chat_id)] = chat_history
 
     def load_chat_history(self, username, chat_id):
         if self.use_file:
@@ -83,8 +66,7 @@ class ChatHistoryManager:
             path = self._get_file_path(username, chat_id)
             if os.path.exists(path):
                 os.remove(path)
-        else:
-            self._get_memory_storage(username).pop(str(chat_id), None)
+        else: self._get_memory_storage(username).pop(str(chat_id), None)
 
     def rename_chat_history_file(self, username, old_chat_id, new_chat_id):
         if self.use_file:
@@ -97,11 +79,8 @@ class ChatHistoryManager:
                 storage[str(new_chat_id)] = storage.pop(str(old_chat_id))
 
     def list_history_files(self, username):
-        if self.use_file:
-            folder = self._get_user_folder(username)
-            return sorted([f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))], key=str.lower)
-        else:
-            return sorted(self._get_memory_storage(username).keys(), key=str.lower)
+        if self.use_file: return sorted([f for f in os.listdir(self._get_user_folder(username)) if os.path.isfile(os.path.join(self._get_user_folder(username), f))], key=str.lower)
+        else: return sorted(self._get_memory_storage(username).keys(), key=str.lower)
 
     def delete_message(self, user_id, chat_id, message_id):
         """Delete a message by its ID."""

@@ -1,15 +1,25 @@
 {
-    "model_name": "Yuna Ai Kokoro V1",
-    "embedding_model_path": "/Users/yuki/Documents/Github/yuna-ai/lib/models/yuna/yuna-ai-v4-q5_k_m.gguf",
-    "embedding_dimensions": 4096,
+    "model_name": "kokoro-v1",
+    "embedding_model_path": "/Users/yuki/Documents/Github/yuna-ai/lib/models/yuna/yuna-ai-v4-miru-loli-mlx",
+    "embedding_dimensions": 2560,
     "num_emotions": 6,
-    "emotion_names": ["sweet", "cool", "passion", "otona", "intelligence", "pure"],
-    "memory_embedding_size": 512,
-    "input_embedding_size": 4096,
+    "emotion_names": [
+        "sweet",
+        "cool",
+        "passion",
+        "otona",
+        "intelligence",
+        "pure"
+    ],
+    "memory_hidden_size": 1024,
     "state_hidden_size": 512,
-    "learning_rate": 0.0005,
-    "batch_size": 256,
-    "epochs": 10,
-    "history_weight": 0.01,
-    "device": "mps"
+    "dropout_rate": 0.1,
+    "learning_rate": 0.00001,
+    "batch_size": 128,
+    "epochs": 50,
+    "weight_decay": 0.01,
+    "lr_warmup_epochs": 20,
+    "early_stopping_patience": 10,
+    "device": "mps",
+    "dataset_path": "dataset.json"
 }
