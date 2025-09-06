@@ -6,8 +6,8 @@ from .mel_processing import (mel_spectrogram_torch)
 from .text import text_to_sequence
 from .utils import load_filepaths_and_text, load_wav_to_torch
 
-def get_text(text):
-    text_norm = text_to_sequence(text)
+def get_text(text=None, language="en-us"):
+    text_norm = text_to_sequence(text, language)
     text_norm = torch.LongTensor(text_norm)
     return text_norm
 
@@ -29,9 +29,9 @@ class TextAudioLoader(torch.utils.data.Dataset):
         self.sampling_rate = hparams.sampling_rate
         self.n_mel_channels = getattr(hparams, "n_mel_channels", 128)
         self.min_text_len = getattr(hparams, "min_text_len", 1)
-        self.max_text_len = getattr(hparams, "max_text_len", 500)
+        self.max_text_len = getattr(hparams, "max_text_len", 5000)
 
-        random.seed(1234)
+        random.seed(8)
         random.shuffle(self.audiopaths_and_text)
         self._filter()
 
@@ -43,14 +43,28 @@ class TextAudioLoader(torch.utils.data.Dataset):
         # wav_length ~= file_size / (wav_channels * Bytes per dim) = file_size / (1 * 2)
         # spec_length = wav_length // hop_length
 
-        audiopaths_and_text_new = []
+        audiopaths_sid_text_new = []
         lengths = []
-        for audiopath, text in self.audiopaths_and_text:
+        for audiopath, sid, text in self.audiopaths_sid_text:
+            if not os.path.isfile(audiopath):
+                continue
+
+            # First, check text length
             if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
-                audiopaths_and_text_new.append([audiopath, text])
-                lengths.append(os.path.getsize(audiopath) // (2 * self.hop_length))
-        self.audiopaths_and_text = audiopaths_and_text_new
+                # Second, check audio length
+                length = os.path.getsize(audiopath) // (2 * self.hop_length)
+                if length < self.min_audio_len // self.hop_length:
+                    continue # Skip if too short
+
+                # If all checks pass, THEN add the file and its length
+                audiopaths_sid_text_new.append([audiopath, sid, text])
+                lengths.append(length)
+
+        self.audiopaths_sid_text = audiopaths_sid_text_new
         self.lengths = lengths
+        print(
+            f"Filtered dataset to {len(self.audiopaths_sid_text)} files."
+        )
 
     def get_audio_text_pair(self, audiopath_and_text):
         # separate filename and text
@@ -181,10 +195,10 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         self.sampling_rate = hparams.sampling_rate
         self.n_mel_channels = getattr(hparams, "n_mel_channels", 128)
         self.min_text_len = getattr(hparams, "min_text_len", 1)
-        self.max_text_len = getattr(hparams, "max_text_len", 500)
+        self.max_text_len = getattr(hparams, "max_text_len", 5000)
         self.min_audio_len = getattr(hparams, "min_audio_len", 8192)
 
-        random.seed(1234)
+        random.seed(8)
         random.shuffle(self.audiopaths_sid_text)
         self._filter()
 
@@ -226,7 +240,6 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         return (text, spec, wav, sid)
 
     def get_audio(self, filename):
-        # TODO : if linear spec exists convert to mel from existing linear spec
         audio, sampling_rate = load_wav_to_torch(filename)
         if sampling_rate != self.sampling_rate:
             raise ValueError(
@@ -236,8 +249,15 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             )
         audio_norm = audio / self.max_wav_value
         audio_norm = audio_norm.unsqueeze(0)
-        spec_filename = filename.replace(".wav", ".spec.pt")
-        spec_filename = spec_filename.replace(".spec.pt", ".mel.pt")
+
+        # If audio is shorter than segment_size, pad it with zeros
+        segment_size = self.hparams.train.segment_size
+        if audio_norm.size(1) < segment_size:
+            audio_norm = torch.nn.functional.pad(
+                audio_norm, (0, segment_size - audio_norm.size(1)), 'constant'
+            )
+
+        spec_filename = filename.replace(".wav", ".mel.pt")
         if os.path.exists(spec_filename):
             spec = torch.load(spec_filename)
         else:

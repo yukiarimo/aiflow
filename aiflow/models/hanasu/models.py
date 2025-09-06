@@ -1412,22 +1412,16 @@ def load_model(config_path, model_path, device="mps"):
 
     return net_g
 
-def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, length_scale=1.0, device="mps", stream=False, output_file=None):
-    # Split text into sentences
+def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, length_scale=1.0, device="mps", stream=False, output_file=None, language="en-us"):
     sentences = _split_sentences(text)
     print(f"Split into {len(sentences)} sentences")
 
     if not stream:
-        # Non-streaming: write directly to file if output_file provided, otherwise keep in memory
         if output_file:
-
-            # Create temporary file for writing audio chunks
             temp_files = []
-
             try:
                 for i, sentence in enumerate(tqdm(sentences, desc="Generating audio", unit="sentence")):
-                    stn_tst = get_text(sentence)
-
+                    stn_tst = get_text(sentence, language)
                     with torch.no_grad():
                         x_tst = stn_tst.to(device).unsqueeze(0)
                         x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
@@ -1443,25 +1437,20 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
                             .float()
                             .numpy()
                         )
-
-                        # Write chunk to temporary file
                         temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
                         temp_files.append(temp_file.name)
-                        sf.write(temp_file.name, audio_chunk, 48000)  # Assuming 48000 sample rate
+                        sf.write(temp_file.name, audio_chunk, 48000)
                         temp_file.close()
 
-                # Concatenate all temporary files into final output
                 print("Concatenating audio chunks...")
                 all_audio = []
                 for temp_file in temp_files:
                     chunk_audio, _ = sf.read(temp_file)
                     all_audio.append(chunk_audio)
 
-                # Write final concatenated audio
                 final_audio = np.concatenate(all_audio)
                 sf.write(output_file, final_audio, 48000)
 
-                # Clean up temporary files
                 for temp_file in temp_files:
                     os.unlink(temp_file)
 
@@ -1469,17 +1458,14 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
                 return final_audio
 
             except Exception as e:
-                # Clean up temporary files on error
                 for temp_file in temp_files:
                     if os.path.exists(temp_file):
                         os.unlink(temp_file)
                 raise e
         else:
-            # Original memory-based approach when no output file specified
             all_audio = []
             for i, sentence in enumerate(tqdm(sentences, desc="Generating audio", unit="sentence")):
                 stn_tst = get_text(sentence)
-
                 with torch.no_grad():
                     x_tst = stn_tst.to(device).unsqueeze(0)
                     x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
@@ -1496,23 +1482,17 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
                         .numpy()
                     )
                     all_audio.append(audio_chunk)
-
-            # Concatenate all audio chunks
             audio = np.concatenate(all_audio)
             return audio
-
     else:
-        # Streaming: yield audio chunks with background generation using threading and queue
         def audio_generator():
-            audio_queue = queue.Queue(maxsize=2)  # Buffer for 2 chunks
+            audio_queue = queue.Queue(maxsize=2)
             pbar = tqdm(total=len(sentences), desc="Generating audio", unit="sentence")
 
             def generate_audio_worker():
-                """Worker thread to generate audio chunks in background"""
                 try:
                     for i, sentence in enumerate(sentences):
                         stn_tst = get_text(sentence)
-
                         with torch.no_grad():
                             x_tst = stn_tst.to(device).unsqueeze(0)
                             x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
@@ -1533,19 +1513,16 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
                 except Exception as e:
                     print(f"Error in audio generation worker: {e}")
                 finally:
-                    # Signal end of generation
                     audio_queue.put(None)
                     pbar.close()
 
-            # Start background generation thread
             worker_thread = threading.Thread(target=generate_audio_worker, daemon=True)
             worker_thread.start()
 
-            # Yield audio chunks as they become available
             while True:
                 try:
-                    audio_chunk = audio_queue.get(timeout=30)  # 30 second timeout
-                    if audio_chunk is None:  # End signal
+                    audio_chunk = audio_queue.get(timeout=30)
+                    if audio_chunk is None:
                         break
                     yield audio_chunk
                 except queue.Empty:
@@ -1555,29 +1532,12 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
                     print(f"Error in audio streaming: {e}")
                     break
 
-            # Ensure worker thread completes
             worker_thread.join(timeout=5)
 
         return audio_generator()
 
 def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_id=0, target_speaker_id=1, device="mps", hps=None):
-    """
-    Perform voice conversion from source speaker to target speaker.
-
-    Args:
-        model: Loaded SynthesizerTrn model
-        source_wav_path: Path to source audio file
-        source_speaker_id: ID of source speaker
-        target_speaker_id: ID of target speaker
-        device: Device to run inference on ("mps", "cuda", "cpu")
-        output_file: Optional path to save output audio file
-
-    Returns:
-        numpy.ndarray: Converted audio as numpy array
-    """
-    # Get model config
     hps = model.hps.data if hasattr(model, 'hps') else hps
-
     max_wav_value = hps.data.max_wav_value
     filter_length = hps.data.filter_length
     hop_length = hps.data.hop_length
@@ -1587,43 +1547,18 @@ def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_
     mel_fmin = hps.data.mel_fmin
     mel_fmax = hps.data.mel_fmax
 
-    # Load and preprocess audio
     audio, sr = load_wav_to_torch(source_wav_path)
-
-    # Normalize audio to [-1, 1] range
     audio_norm = audio / max_wav_value
     audio_norm = audio_norm.unsqueeze(0)
+    mel = mel_spectrogram_torch(audio_norm, filter_length, n_mel_channels, sampling_rate, hop_length, win_length, mel_fmin, mel_fmax, center=False)
 
-    # Convert audio to mel spectrogram
-    mel = mel_spectrogram_torch(
-        audio_norm,
-        filter_length,
-        n_mel_channels,
-        sampling_rate,
-        hop_length,
-        win_length,
-        mel_fmin,
-        mel_fmax,
-        center=False,
-    )
-
-    # Perform voice conversion
     with torch.no_grad():
         y = mel.to(device)
         y_lengths = torch.LongTensor([y.shape[2]]).to(device)
         sid_src = torch.LongTensor([source_speaker_id]).to(device)
         sid_tgt = torch.LongTensor([target_speaker_id]).to(device)
-
         print(f"Performing voice conversion from speaker {source_speaker_id} to {target_speaker_id}...")
-
-        # Call the voice conversion method
-        audio_out, _, _ = model.voice_conversion(
-            y, y_lengths, sid_src=sid_src, sid_tgt=sid_tgt
-        )
-
+        audio_out, _, _ = model.voice_conversion(y, y_lengths, sid_src=sid_src, sid_tgt=sid_tgt)
         print("Voice conversion complete.")
 
-    # Get the audio data, convert to numpy
-    output_audio = audio_out[0, 0].data.cpu().float().numpy()
-
-    return output_audio
+    return audio_out[0, 0].data.cpu().float().numpy()

@@ -7,7 +7,7 @@ class ChatHistoryManager:
         self.config = config
         self.fernet = Fernet("zWZnu-lxHCTgY_EqlH4raJjxNJIgPlvXFbdk45bca_I=".encode())
         self.use_file = use_file
-        self.memory_storage = {}  # Format: {username: {chat_id: history}}
+        self.memory_storage = {}
 
     def _get_user_folder(self, username):
         os.makedirs(os.path.join("db/history", username), exist_ok=True)
@@ -17,14 +17,11 @@ class ChatHistoryManager:
 
     def _read_encrypted_file(self, path):
         try:
-            with open(path, 'rb') as file:
-                return self.fernet.decrypt(file.read()).decode()
-        except (FileNotFoundError, InvalidToken):
-            return None
+            with open(path, 'rb') as file: return self.fernet.decrypt(file.read()).decode()
+        except (FileNotFoundError, InvalidToken): return None
 
     def _write_encrypted_file(self, path, data):
-        with open(path, 'wb') as file:
-            file.write(self.fernet.encrypt(data.encode()))
+        with open(path, 'wb') as file: file.write(self.fernet.encrypt(data.encode()))
 
     def _get_memory_storage(self, username): return self.memory_storage.setdefault(username, {})
 
@@ -64,28 +61,23 @@ class ChatHistoryManager:
     def delete_chat_history_file(self, username, chat_id):
         if self.use_file:
             path = self._get_file_path(username, chat_id)
-            if os.path.exists(path):
-                os.remove(path)
+            if os.path.exists(path): os.remove(path)
         else: self._get_memory_storage(username).pop(str(chat_id), None)
 
     def rename_chat_history_file(self, username, old_chat_id, new_chat_id):
         if self.use_file:
             old_path = self._get_file_path(username, old_chat_id)
-            if os.path.exists(old_path):
-                os.rename(old_path, self._get_file_path(username, new_chat_id))
+            if os.path.exists(old_path): os.rename(old_path, self._get_file_path(username, new_chat_id))
         else:
             storage = self._get_memory_storage(username)
-            if str(old_chat_id) in storage:
-                storage[str(new_chat_id)] = storage.pop(str(old_chat_id))
+            if str(old_chat_id) in storage: storage[str(new_chat_id)] = storage.pop(str(old_chat_id))
 
     def list_history_files(self, username):
         if self.use_file: return sorted([f for f in os.listdir(self._get_user_folder(username)) if os.path.isfile(os.path.join(self._get_user_folder(username), f))], key=str.lower)
         else: return sorted(self._get_memory_storage(username).keys(), key=str.lower)
 
     def delete_message(self, user_id, chat_id, message_id):
-        """Delete a message by its ID."""
         history = self.load_chat_history(user_id, chat_id)
-        # Find and remove the message with matching ID
         for i, msg in enumerate(history):
             if msg.get('id') == message_id:
                 history.pop(i)
@@ -93,9 +85,7 @@ class ChatHistoryManager:
         return self.save_chat_history(history, user_id, chat_id)
 
     def edit_message(self, user_id, chat_id, message_id, new_text):
-        """Edit a message by its ID."""
         history = self.load_chat_history(user_id, chat_id)
-        # Find and edit the message with matching ID
         for msg in history:
             if msg.get('id') == message_id:
                 msg['text'] = new_text

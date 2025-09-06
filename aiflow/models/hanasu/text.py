@@ -1,7 +1,10 @@
 import re
 from phonemizer.backend import EspeakBackend
+import cutlet
 from .utils import load_filepaths_and_text
 backend = EspeakBackend("en-us", preserve_punctuation=True, with_stress=True, words_mismatch="warn")
+ru_backend = EspeakBackend("ru", preserve_punctuation=True, with_stress=True, words_mismatch="warn")
+ja_backend = cutlet.Cutlet(use_foreign_spelling=False)
 
 _pad = "_"
 _punctuation = ';:,.!?¡¿—…"«»“” '
@@ -20,17 +23,18 @@ _abbreviations = [
         ("dr", "doctor"),
         ("st", "saint"),
         ("drs", "doctors"),
+        ("u.s", "us"),
     ]
 ]
 
 def expand_abbreviations(text):
-    for regex, replacement in _abbreviations:
-        text = re.sub(regex, replacement, text)
+    for regex, replacement in _abbreviations: text = re.sub(regex, replacement, text)
     return text
 
-def english_cleaners3(text):
-    """Pipeline for English text, including abbreviation expansion. + punctuation + stress"""
-    phonemes = backend.phonemize([text], strip=False)[0]
+def english_cleaners3(text=None, language="en-us"):
+    if language == "en-us":  phonemes = backend.phonemize([text], strip=False)[0]
+    if language == "ru": phonemes = ru_backend.phonemize([text], strip=False)[0]
+    if language == "ja": phonemes = ja_backend.romaji(text)
     return phonemes
 
 # Mappings from symbol to numeric ID and vice versa:
@@ -39,12 +43,10 @@ _id_to_symbol = {i: s for i, s in enumerate(symbols)}
 
 def symbol_to_id_converter(symbol):
     """Converts a symbol to its corresponding ID"""
-    if symbol in _symbol_to_id.keys():
-        return _symbol_to_id[symbol]
-    else:
-        raise ValueError(f"Symbol '{symbol}' not found in the symbol table.")
+    if symbol in _symbol_to_id.keys(): return _symbol_to_id[symbol]
+    else: raise ValueError(f"Symbol '{symbol}' not found in the symbol table.")
 
-def text_to_sequence(text):
+def text_to_sequence(text=None, language="en-us"):
     """Converts a string of text to a sequence of IDs corresponding to the symbols in the text.
     Args:
       text: string to convert to a sequence
@@ -54,7 +56,7 @@ def text_to_sequence(text):
     """
     sequence = []
 
-    clean_text = english_cleaners3(text)
+    clean_text = english_cleaners3(text, language)
     for symbol in clean_text:
         if symbol in _symbol_to_id.keys():
             symbol_id = _symbol_to_id[symbol]
@@ -76,8 +78,7 @@ def cleaned_text_to_sequence(cleaned_text):
         if symbol in _symbol_to_id.keys():
             symbol_id = _symbol_to_id[symbol]
             sequence += [symbol_id]
-        else:
-            continue
+        else: continue
     return sequence
 
 def sequence_to_text(sequence):
@@ -88,9 +89,8 @@ def sequence_to_text(sequence):
         result += s
     return result
 
-def preprocess_filelists(filelists):
+def preprocess_filelists(filelists, language="en-us"):
     for filelist in filelists:
-        print("START:", filelist)
         filepaths_and_text = load_filepaths_and_text(filelist)
         for i in range(len(filepaths_and_text)):
             # Handle both 2-column (single speaker) and 3-column (multispeaker) formats
@@ -98,13 +98,13 @@ def preprocess_filelists(filelists):
                 # Multispeaker format: filepath|speaker_id|text
                 original_text = filepaths_and_text[i][2]
                 print(f"Processing: {original_text}")
-                cleaned_text = english_cleaners3(original_text)
+                cleaned_text = english_cleaners3(original_text, language)
                 filepaths_and_text[i][2] = cleaned_text
             else:
                 # Single speaker format: filepath|text
                 original_text = filepaths_and_text[i][1]
                 print(f"Processing: {original_text}")
-                cleaned_text = english_cleaners3(original_text)
+                cleaned_text = english_cleaners3(original_text, language)
                 filepaths_and_text[i][1] = cleaned_text
 
         new_filelist = filelist + ".cleaned"

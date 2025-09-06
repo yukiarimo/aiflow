@@ -18,7 +18,7 @@ def export_onnx(model_path: str, config_path: str, output: str) -> None:
         config_path: Path to model config (.json)
         output: Path to output model (.onnx)
     """
-    torch.manual_seed(1234)
+    torch.manual_seed(8)
     model_path = Path(model_path)
     config_path = Path(config_path)
     output = Path(output)
