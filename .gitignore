@@ -136,3 +136,4 @@ aiflow/models/tadashi/watermark/*
 aiflow/models/hanasu/monotonic_align/core.c
 aiflow/models/tadashi/*
 aiflow/models/kokoro/*
+.DS_Store

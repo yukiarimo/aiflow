@@ -7,3 +7,5 @@ setup(
     ext_modules=cythonize("core.pyx"),
     include_dirs=[numpy.get_include()],
 )
+
+# python setup.py build_ext --inplace

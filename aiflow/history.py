@@ -38,7 +38,6 @@ class ChatHistoryManager:
         else: self._get_memory_storage(username)[str(chat_id)] = self._get_template()
 
     def save_chat_history(self, chat_history, username, chat_id):
-        print(chat_history)
         if self.use_file: self._write_encrypted_file(self._get_file_path(username, chat_id), json.dumps(chat_history))
         else: self._get_memory_storage(username)[str(chat_id)] = chat_history
 
@@ -47,14 +46,12 @@ class ChatHistoryManager:
             decrypted = self._read_encrypted_file(self._get_file_path(username, chat_id))
             if decrypted is None:
                 self.create_chat_history_file(username, chat_id)
-                print(f"Chat history file for {chat_id} does not exist, creating a new one for {username}")
                 return []
             return json.loads(decrypted)
         else:
             storage = self._get_memory_storage(username)
             if str(chat_id) not in storage:
                 self.create_chat_history_file(username, chat_id)
-                print(f"Chat history for {chat_id} does not exist, creating a new one for {username}")
                 return []
             return storage[str(chat_id)]
 
@@ -91,3 +88,31 @@ class ChatHistoryManager:
                 msg['text'] = new_text
                 break
         return self.save_chat_history(history, user_id, chat_id)
+
+    def delete_all_below(self, user_id, chat_id, message_id):
+        history = self.load_chat_history(user_id, chat_id)
+        target_index = -1
+        for i, msg in enumerate(history):
+            if msg.get('id') == message_id:
+                target_index = i
+                break
+        
+        if target_index != -1:
+            # Keep messages up to and including the target message
+            history = history[:target_index + 1]
+            return self.save_chat_history(history, user_id, chat_id)
+        return None
+
+    def delete_from_message(self, user_id, chat_id, message_id):
+        history = self.load_chat_history(user_id, chat_id)
+        target_index = -1
+        for i, msg in enumerate(history):
+            if msg.get('id') == message_id:
+                target_index = i
+                break
+        
+        if target_index != -1:
+            # Keep messages up to but not including the target message
+            history = history[:target_index]
+            return self.save_chat_history(history, user_id, chat_id)
+        return None

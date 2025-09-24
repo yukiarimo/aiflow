@@ -1,12 +1,12 @@
 import json
 import os
 import uuid
-import torch
+import mlx.core as mx
 import requests
+import torch
 from aiflow.utils import get_config, clearText, search_web
 from pydub import AudioSegment
 from scipy.io.wavfile import write
-import re
 
 def load_conditional_imports(config):
     """
@@ -25,17 +25,18 @@ def load_conditional_imports(config):
         globals()['load'] = load
 
     if text_mode == "mlxvlm":
-        from mlx_vlm import load, generate
+        from mlx_vlm import load, generate, stream_generate
         globals()['generate'] = generate
         globals()['load'] = load
+        globals()['stream_generate'] = stream_generate
 
     if config['ai'].get('audio'):
-        from transformers import pipeline
-        globals()['pipeline'] = pipeline
+        if torch.backends.mps.is_available():
+            from parakeet_mlx import from_pretrained
+            globals()['yunaListenPipe'] = from_pretrained
+        elif torch.cuda.is_available(): raise EnvironmentError("Not implemented yet.")
 
-    audio_mode = config['server'].get('yuna_audio_mode')
-    print(f"Audio mode: {audio_mode}")
-    if audio_mode == "hanasu":
+    if config['ai'].get('hanasu') and config['server'].get('yuna_audio_mode') == 'hanasu':
         from aiflow.models.hanasu.models import inference as inference_hanasu
         from aiflow.models.hanasu.models import load_model as load_model_hanasu
         globals()['inference_hanasu'] = inference_hanasu
@@ -52,33 +53,59 @@ class AGIWorker:
         self.kokoro_model = None
         load_conditional_imports(self.config)
 
-    def get_history_text(self, chat_history, text, useHistory, yunaConfig):
+    def get_history_text(self, chat_history, text, useHistory, yunaConfig, image_paths, append_current_user=True):
         user, asst = yunaConfig["ai"]["names"][0].lower(), yunaConfig["ai"]["names"][1].lower()
 
-        # MODIFIED: Rebuild history string with awareness of attachments
+        # This list will collect image paths from both history and the current message
+        all_image_paths = []
+
+        if useHistory is False: final = text
+
         history_str = ""
         if useHistory and chat_history:
             for m in chat_history:
                 role = user if m['name'].lower() == user else asst
-
-                # Start with the original text of the message
                 message_content = m.get('text', '')
+                image_count = 0
+                
+                # Process attachments within the historical message
+                if m.get('data') and isinstance(m.get('data'), list):
+                    for attachment in m['data']:
+                        if attachment.get('type') == 'text' and attachment.get('content'):
+                            message_content = f"{message_content}<data>{attachment['content']}</data>"
+                        elif attachment.get('type') == 'image' and attachment.get('path'):
+                            image_path = attachment['path'].lstrip('/')
+                            if os.path.exists(image_path):
+                                all_image_paths.append(image_path)
+                                image_count += 1
 
-                history_str += f"<{role}>{message_content}</{role}>\n"
+                # Append img tokens for historical user messages that had images
+                if role == user:
+                    history_str += f"<{role}>{message_content}{'<image>' * image_count}</{role}>\n"
+                else:
+                    history_str += f"<{role}>{message_content}</{role}>\n"
+        
+        # Build final prompt, including the current user message if applicable
+        if append_current_user and useHistory:
+            current_prompt = text or ""
+            current_image_count = len(image_paths or [])
+            all_image_paths.extend(image_paths or [])
+            final = f"{history_str}<{user}>{current_prompt}{'<image>' * current_image_count}</{user}>\n<{asst}>"
 
-        current_prompt = text.get('text') if isinstance(text, dict) else text
-        final = f"{history_str}<{user}>{current_prompt}</{user}>\n<{asst}>"
-        return final
+        return final, all_image_paths
 
-    def generate_text(self, text=None, kanojo=None, chat_history=None, useHistory=True, yunaConfig=None, stream=False, image_path=None):
-        self.config = yunaConfig or self.config
+    def generate_text(self, text=None, kanojo=None, chat_history=None, useHistory=True, yunaConfig=None, stream=False, image_paths=None, append_current_user=True):
+        if yunaConfig is None: yunaConfig = self.config
+        self.config = yunaConfig
         mode = self.config["server"]["yuna_text_mode"]
-        if useHistory: final_prompt = self.get_history_text(chat_history, clearText(text), useHistory, yunaConfig)
-        else: final_prompt = clearText(text)
+        
+        final_prompt, all_image_paths = self.get_history_text(
+            chat_history, text, useHistory, yunaConfig, image_paths, append_current_user
+        )
 
-        final_prompt = "<bos>\n<dialog>\n" + final_prompt # remove <bos> ???
-
-        kwargs = {
+        final_prompt = "<bos>\n<dialog>\n" + final_prompt
+        stop_tokens = ["</yuna>", "</yuki>", "</start_of_image>"] + yunaConfig["ai"].get("stop", [])
+        kwargs_all = {
             "max_tokens": yunaConfig["ai"]["max_new_tokens"],
             "temperature": yunaConfig["ai"]["temperature"],
             "prefill_step_size": 2048,
@@ -90,27 +117,64 @@ class AGIWorker:
             "repetition_context_size": 128,
             "eos_tokens": ["</yuna>", "</yuki>", "</start_of_image>"],
             "skip_special_tokens": True,
-            "stop": yunaConfig["ai"]["stop"]
         }
 
         if mode == "mlx":
-            text = generate(model=self.text_model, tokenizer=self.tokenizer, prompt=final_prompt, verbose=True, **kwargs)
-            return clearText(text.text)
-        elif mode == "mlxvlm":
-            if image_path is None:
-                text = generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, verbose=False, **kwargs)
+            response_generator = generate(
+                model=self.text_model, 
+                tokenizer=self.tokenizer, 
+                prompt=final_prompt, 
+                verbose=False,
+                **kwargs_all
+            )
+
+            if stream:
+                def stream_wrapper():
+                    for chunk in response_generator:
+                        if chunk in stop_tokens:
+                            break
+                        yield clearText(chunk)
+                return stream_wrapper()
             else:
-                # insert image token "<start_of_image>" before the last only <yuna> tag
-                yuna_tag = yunaConfig['ai']['names'][1].lower()
-                pattern = f'<{yuna_tag}>'
-                matches = list(re.finditer(pattern, final_prompt))
-                if matches:
-                    last_match = matches[-1]
-                    final_prompt = final_prompt[:last_match.start()] + f'<start_of_image><{yuna_tag}>' + final_prompt[last_match.end():]
-                print(final_prompt)
-                text = generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, image=image_path, verbose=False, **kwargs)
-            return clearText(text.text)
+                full_response = "".join(response_generator)
+                return clearText(full_response)
+
+        elif mode == "mlxvlm":
+            print(f"Using {len(all_image_paths)} image(s): {all_image_paths}")
+            print(final_prompt)
+
+            if stream:
+                # *** USE THE CORRECT `stream_generate` FUNCTION ***
+                response_generator = stream_generate(
+                    model=self.text_model, 
+                    processor=self.tokenizer, 
+                    prompt=final_prompt, 
+                    image=all_image_paths if all_image_paths else None,
+                    **kwargs_all
+                )
+                def stream_wrapper():
+                    # The generator yields objects, so we access .text
+                    for chunk in response_generator:
+                        chunk_text = chunk.text
+                        if chunk_text in stop_tokens:
+                            break
+                        yield chunk_text  # Remove clearText() here
+                return stream_wrapper()
+            else:
+                # The non-streaming path remains the same, using the regular 'generate'.
+                response_object = generate(
+                    model=self.text_model, 
+                    processor=self.tokenizer, 
+                    prompt=final_prompt, 
+                    image=all_image_paths if all_image_paths else None,
+                    verbose=False,
+                    **kwargs_all
+                )
+                response_string = response_object.text
+                return clearText(response_string)
+                
         elif mode == "koboldcpp":
+            # Your KoboldCpp handling seems fine, so it's left as is.
             common_payload = {
                 "temperature": yunaConfig["ai"]["temperature"],
                 "top_p": yunaConfig["ai"]["top_p"],
@@ -142,7 +206,7 @@ class AGIWorker:
                 "banned_tokens": [],
                 "render_special": True,
                 "quiet": True,
-                "stop_sequence": yunaConfig["ai"]["stop"],
+                "stop_sequence": stop_tokens,
                 "use_default_badwordsids": False,
                 "bypass_eos": False,
                 "prompt": final_prompt,
@@ -173,14 +237,7 @@ class AGIWorker:
         else:
             return ''
 
-    def load_audio_model(self):
-        self.yunaListen = pipeline(
-            "automatic-speech-recognition",
-            model="openai/whisper-tiny",
-            torch_dtype=torch.float32,
-            device="mps" if torch.backends.mps.is_available() else "cpu",
-            model_kwargs={"attn_implementation": "sdpa"},
-        )
+    def load_audio_model(self): self.yunaListen = yunaListenPipe("mlx-community/parakeet-tdt-0.6b-v3", dtype=mx.float16)
 
     def load_voice_model(self):
         if self.config["server"]["yuna_audio_mode"] == "hanasu":
@@ -206,27 +263,26 @@ class AGIWorker:
                 offload_kqv=self.config["ai"]["offload_kqv"],
                 verbose=False
             )
-        elif mode == "mlx": self.text_model, self.tokenizer =  load(self.config['server']['yuna_default_model'][0])
-        elif mode == "mlxvlm": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'][0])
+        elif mode == "mlx": self.text_model, self.tokenizer =  load(self.config['server']['yuna_default_model'][0], trust_remote_code=True)
+        elif mode == "mlxvlm": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'][0], trust_remote_code=True)
 
     def load_kokoro_model(self, config, model_path): print("Kokoro is not available in this environment.")
 
     def export_audio(self, input_file, output_filename): AudioSegment.from_file(input_file).export(output_filename, format="mp3")
-    def transcribe_audio(self, audio_file): return self.yunaListen(audio_file, chunk_length_s=30, batch_size=60, return_timestamps=False)['text']
+    def transcribe_audio(self, audio_file): return self.yunaListen.transcribe(audio_file).text.strip()
     def speak_text(self, text, output_filename=None):
         output_filename = f"static/audio/{uuid.uuid4()}.mp3"
         mode = self.config['server']['yuna_audio_mode']
 
         if mode == 'siri':
-            temp = "temp.aiff"
-            os.system(f'say -o {temp} {repr(text)}')
-            self.export_audio(temp, output_filename)
-            os.remove(temp)
+            os.system(f'say -o "static/audio/temp.aiff" {repr(text)}')
+            self.export_audio("static/audio/temp.aiff", output_filename)
+            os.remove("static/audio/temp.aiff")
         elif mode == "siri-pv":
-            temp = "static/audio/audio.aiff"
             voice_model = self.config['server']['voice_default_model'][0]
-            os.system(f'say -v {voice_model} -o {temp} {repr(text)}')
-            self.export_audio(temp, output_filename)
+            os.system(f'say -v {voice_model} -o "static/audio/temp.aiff" {repr(text)}')
+            self.export_audio("static/audio/temp.aiff", output_filename)
+            os.remove("static/audio/temp.aiff")
         elif mode == "hanasu":
             result = inference_hanasu(
                 model=self.voice_model,
@@ -234,7 +290,7 @@ class AGIWorker:
                 noise_scale=0.2,
                 noise_scale_w=1.0,
                 length_scale=1.0,
-                device="mps",
+                device="mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
                 stream=False,
             )
 
