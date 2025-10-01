@@ -153,7 +153,6 @@ class AGIWorker:
                         yield chunk_text
                 return stream_wrapper()
             else:
-                    image=all_image_paths if all_image_paths else None,
                 response_generator = stream_generate(
                     model=self.text_model,
                     processor=self.tokenizer,
