@@ -32,9 +32,19 @@ def expand_abbreviations(text):
     return text
 
 def english_cleaners3(text=None, language="en-us"):
-    if language == "en-us":  phonemes = backend.phonemize([text], strip=False)[0]
-    if language == "ru": phonemes = ru_backend.phonemize([text], strip=False)[0]
-    if language == "ja": phonemes = ja_backend.romaji(text)
+    if language == "en-us":
+        phonemes = backend.phonemize([text], strip=False)[0]
+    elif language == "ru":
+        result = ru_backend.phonemize([text], strip=False)
+        if not result or not result[0]:
+            print(f"Warning: phonemizer returned empty result for: {text}")
+            phonemes = ""
+        else:
+            phonemes = result[0]
+    elif language == "ja":
+        phonemes = ja_backend.romaji(text)
+    else:
+        phonemes = text
     return phonemes
 
 # Mappings from symbol to numeric ID and vice versa:

@@ -13,6 +13,7 @@ def get_config(config_path='static/config.json', config=None):
     default_config = {
         "ai": {
             "names": ["Yuki", "Yuna"],
+            "bos": ["<|endoftext|>", True],
             "kokoro": False,
             "audio": False,
             "mind": False,

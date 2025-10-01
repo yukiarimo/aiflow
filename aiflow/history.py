@@ -96,7 +96,7 @@ class ChatHistoryManager:
             if msg.get('id') == message_id:
                 target_index = i
                 break
-        
+
         if target_index != -1:
             # Keep messages up to and including the target message
             history = history[:target_index + 1]
@@ -110,7 +110,7 @@ class ChatHistoryManager:
             if msg.get('id') == message_id:
                 target_index = i
                 break
-        
+
         if target_index != -1:
             # Keep messages up to but not including the target message
             history = history[:target_index]
