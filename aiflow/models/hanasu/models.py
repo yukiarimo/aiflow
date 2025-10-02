@@ -11,8 +11,7 @@ from . import commons
 from . import monotonic_align
 from .commons import get_padding, init_weights
 from . import utils
-from .text import symbols
-from .data_utils import get_text
+from .text import symbols, split_and_process_text, cleaned_text_to_sequence
 import numpy as np
 from tqdm import tqdm
 import soundfile as sf
@@ -2418,9 +2417,9 @@ class SynthesizerTrn(nn.Module):
         x,
         x_lengths,
         sid=None,
-        noise_scale=0.2,
+        noise_scale=0.667,
         length_scale=1,
-        noise_scale_w=1.0,
+        noise_scale_w=0.8,
         temperature=1.0,
     ):
         with torch.autocast(device_type=x.device.type):
@@ -2485,38 +2484,6 @@ class SynthesizerTrn(nn.Module):
         o_hat = self.dec(z_hat * y_mask, g=g_tgt)
         return o_hat, y_mask, (z, z_p, z_hat)
 
-def _split_sentences(text):
-    """Split text into sentences by . ! ? with basic cleaning"""
-    # Replace newlines and normalize whitespace
-    text = re.sub(r'\n+', ' ', text)
-    text = re.sub(r'\s+', ' ', text.strip())
-
-    # Replace en-dash, em-dash, hyphens, semicolons, colons with commas
-    text = re.sub(r'[–—\-;:]', ',', text)
-
-    # Remove parentheses
-    text = re.sub(r'[()]', '', text)
-
-    # Remove all styles of quotes
-    text = re.sub(r'[""''"`]', '', text)
-
-    # Split by sentence endings while preserving the punctuation
-    sentences = re.split(r'([.!?…])', text)
-
-    # Reconstruct sentences with their punctuation
-    result = []
-    for i in range(0, len(sentences) - 1, 2):
-        sentence = sentences[i].strip()
-        if sentence:  # Only add non-empty sentences
-            punctuation = sentences[i + 1] if i + 1 < len(sentences) else ''
-            result.append(sentence + punctuation)
-
-    # Handle case where text doesn't end with punctuation
-    if len(sentences) % 2 == 1 and sentences[-1].strip():
-        result.append(sentences[-1].strip())
-
-    return result
-
 def load_model(config_path, model_path, device="mps"):
     """Load the model from the specified path."""
     hps = utils.get_hparams_from_file(config_path)
@@ -2533,19 +2500,20 @@ def load_model(config_path, model_path, device="mps"):
 
     return net_g
 
-def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, length_scale=1.0, device="mps", stream=False, output_file=None, language="en-us"):
-    sentences = _split_sentences(text)
-    print(f"Split into {len(sentences)} sentences")
+def inference(model=None, text=None, sid=0, noise_scale=0.667, noise_scale_w=0.8, length_scale=1.0, device="mps", stream=False, output_file=None, language="en-us"):
+    # Use the new text processing function from text.py
+    processed_chunks = split_and_process_text(text, language=language, max_length=300, combine=True)
+    print(f"Split into {len(processed_chunks)} chunks")
 
     if not stream:
         if output_file:
             temp_files = []
             try:
-                for i, sentence in enumerate(tqdm(sentences, desc="Generating audio", unit="sentence")):
-                    stn_tst = get_text(sentence, language)
+                for i, chunk in enumerate(tqdm(processed_chunks, desc="Generating audio", unit="chunk")):
+                    stn_tst = cleaned_text_to_sequence(chunk)
                     with torch.no_grad():
-                        x_tst = stn_tst.to(device).unsqueeze(0)
-                        x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
+                        x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
+                        x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
                         audio_chunk = (
                             model.infer(
                                 x_tst, x_tst_lengths,
@@ -2585,11 +2553,11 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
                 raise e
         else:
             all_audio = []
-            for i, sentence in enumerate(tqdm(sentences, desc="Generating audio", unit="sentence")):
-                stn_tst = get_text(sentence)
+            for i, chunk in enumerate(tqdm(processed_chunks, desc="Generating audio", unit="chunk")):
+                stn_tst = cleaned_text_to_sequence(chunk)
                 with torch.no_grad():
-                    x_tst = stn_tst.to(device).unsqueeze(0)
-                    x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
+                    x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
+                    x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
                     audio_chunk = (
                         model.infer(
                             x_tst, x_tst_lengths,
@@ -2608,15 +2576,15 @@ def inference(model=None, text=None, sid=0, noise_scale=0.2, noise_scale_w=1.0, 
     else:
         def audio_generator():
             audio_queue = queue.Queue(maxsize=2)
-            pbar = tqdm(total=len(sentences), desc="Generating audio", unit="sentence")
+            pbar = tqdm(total=len(processed_chunks), desc="Generating audio", unit="chunk")
 
             def generate_audio_worker():
                 try:
-                    for i, sentence in enumerate(sentences):
-                        stn_tst = get_text(sentence)
+                    for i, chunk in enumerate(processed_chunks):
+                        stn_tst = cleaned_text_to_sequence(chunk)
                         with torch.no_grad():
-                            x_tst = stn_tst.to(device).unsqueeze(0)
-                            x_tst_lengths = torch.LongTensor([stn_tst.size(0)]).to(device)
+                            x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
+                            x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
                             audio_chunk = (
                                 model.infer(
                                     x_tst, x_tst_lengths,

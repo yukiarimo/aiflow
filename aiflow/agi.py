@@ -25,7 +25,7 @@ def load_conditional_imports(config):
         globals()['load'] = load
 
     if text_mode == "mlxvlm":
-        from mlx_vlm import load, generate, stream_generate
+        from yuna_mlx import load, generate, stream_generate
         globals()['generate'] = generate
         globals()['load'] = load
         globals()['stream_generate'] = stream_generate
