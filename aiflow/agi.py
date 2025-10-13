@@ -4,7 +4,7 @@ import uuid
 import mlx.core as mx
 import requests
 import torch
-from aiflow.utils import get_config, clearText, search_web
+from aiflow.utils import get_config, clearText
 from pydub import AudioSegment
 from scipy.io.wavfile import write
 
@@ -25,7 +25,14 @@ def load_conditional_imports(config):
         globals()['load'] = load
 
     if text_mode == "mlxvlm":
-        from yuna_mlx import load, generate, stream_generate
+        from mlxvlm import load, generate, stream_generate
+        globals()['generate'] = generate
+        globals()['load'] = load
+        globals()['stream_generate'] = stream_generate
+
+    if text_mode == "yunamlx":
+        from aiflow.models.yuna_mlx.yuna.utils import load
+        from aiflow.models.yuna_mlx.yuna.yuna import stream_generate, generate
         globals()['generate'] = generate
         globals()['load'] = load
         globals()['stream_generate'] = stream_generate
@@ -55,13 +62,11 @@ class AGIWorker:
 
     def get_history_text(self, chat_history, text, useHistory, yunaConfig, image_paths, append_current_user=True):
         user, asst = yunaConfig["ai"]["names"][0].lower(), yunaConfig["ai"]["names"][1].lower()
-
-        # This list will collect image paths from both history and the current message
-        all_image_paths = []
+        all_image_paths = []  # This list will collect image paths from both history and the current message
 
         if useHistory is False: final = text
-
         history_str = ""
+
         if useHistory and chat_history:
             for m in chat_history:
                 role = user if m['name'].lower() == user else asst
@@ -71,8 +76,7 @@ class AGIWorker:
                 # Process attachments within the historical message
                 if m.get('data') and isinstance(m.get('data'), list):
                     for attachment in m['data']:
-                        if attachment.get('type') == 'text' and attachment.get('content'):
-                            message_content = f"{message_content}<data>{attachment['content']}</data>"
+                        if attachment.get('type') == 'text' and attachment.get('content'): message_content = f"{message_content}<data>{attachment['content']}</data>"
                         elif attachment.get('type') == 'image' and attachment.get('path'):
                             image_path = attachment['path'].lstrip('/')
                             if os.path.exists(image_path):
@@ -80,10 +84,8 @@ class AGIWorker:
                                 image_count += 1
 
                 # Append img tokens for historical user messages that had images
-                if role == user:
-                    history_str += f"<{role}>{message_content}{'<image>' * image_count}</{role}>\n"
-                else:
-                    history_str += f"<{role}>{message_content}</{role}>\n"
+                if role == user: history_str += f"<{role}>{message_content}{'<image>' * image_count}</{role}>\n"
+                else: history_str += f"<{role}>{message_content}</{role}>\n"
 
         # Build final prompt, including the current user message if applicable
         if append_current_user and useHistory:
@@ -98,14 +100,10 @@ class AGIWorker:
         if yunaConfig is None: yunaConfig = self.config
         self.config = yunaConfig
         mode = self.config["server"]["yuna_text_mode"]
-
-        final_prompt, all_image_paths = self.get_history_text(
-            chat_history, text, useHistory, yunaConfig, image_paths, append_current_user
-        )
+        final_prompt, all_image_paths = self.get_history_text(chat_history, text, useHistory, yunaConfig, image_paths, append_current_user)
 
         if kanojo: final_prompt = f"{yunaConfig['ai']['bos'][0]}\n{kanojo}\n<dialog>\n{final_prompt}" if yunaConfig["ai"]["bos"][1] else f"{kanojo}\n<dialog>\n{final_prompt}"
         else: final_prompt = f"{yunaConfig['ai']['bos'][0]}\n<dialog>\n{final_prompt}" if yunaConfig["ai"]["bos"][1] else f"<dialog>\n{final_prompt}"
-
         stop_tokens = yunaConfig["ai"].get("stop", [])
 
         kwargs_all = {
@@ -130,8 +128,7 @@ class AGIWorker:
 
             if stream:
                 def stream_wrapper():
-                    for chunk_text in response_generator:
-                        yield clearText(chunk_text)
+                    for chunk_text in response_generator: yield clearText(chunk_text)
                 return stream_wrapper()
             else:
                 full_response = "".join(response_generator)
@@ -149,8 +146,7 @@ class AGIWorker:
                     **kwargs_all
                 )
                 def stream_wrapper():
-                    for chunk_text in response_generator:
-                        yield chunk_text
+                    for chunk_text in response_generator: yield chunk_text
                 return stream_wrapper()
             else:
                 response_generator = stream_generate(
@@ -164,47 +160,10 @@ class AGIWorker:
                 return clearText(full_response)
 
         elif mode == "koboldcpp":
-            # Your KoboldCpp handling seems fine, so it's left as is.
-            common_payload = {
-                "temperature": yunaConfig["ai"]["temperature"],
-                "top_p": yunaConfig["ai"]["top_p"],
-                "top_k": yunaConfig["ai"]["top_k"],
-                "min_p": 0.2,
-                "logit_bias": {},
-                "presence_penalty": 0,
-            }
-            specific = {
-                "n": 1,
-                "max_context_length": yunaConfig["ai"]["context_length"],
-                "max_length": yunaConfig["ai"]["max_new_tokens"],
-                "rep_pen": yunaConfig["ai"]["repetition_penalty"],
-                "top_a": 0,
-                "typical": 1,
-                "tfs": 0.8,
-                "rep_pen_range": 512,
-                "rep_pen_slope": 0,
-                "sampler_order": [6, 5, 0, 2, 3, 1, 4],
-                "memory": kanojo if kanojo is not None else "",
-                "trim_stop": True,
-                "genkey": "KCPP9126",
-                "mirostat": 2,
-                "mirostat_tau": 4,
-                "mirostat_eta": 0.3,
-                "dynatemp_range": 0,
-                "dynatemp_exponent": 1,
-                "smoothing_factor": 0,
-                "banned_tokens": [],
-                "render_special": True,
-                "quiet": True,
-                "stop_sequence": stop_tokens,
-                "use_default_badwordsids": False,
-                "bypass_eos": False,
-                "prompt": final_prompt,
-            }
-            payload = {**common_payload, **specific}
+            payload = {"temperature": yunaConfig["ai"]["temperature"], "top_p": yunaConfig["ai"]["top_p"], "top_k": yunaConfig["ai"]["top_k"], "min_p": 0.2, "logit_bias": {}, "presence_penalty": 0, "n": 1, "max_context_length": yunaConfig["ai"]["context_length"], "max_length": yunaConfig["ai"]["max_new_tokens"], "rep_pen": yunaConfig["ai"]["repetition_penalty"], "top_a": 0, "typical": 1, "tfs": 0.8, "rep_pen_range": 512, "rep_pen_slope": 0, "sampler_order": [6, 5, 0, 2, 3, 1, 4], "memory": kanojo if kanojo is not None else "", "trim_stop": True, "genkey": "KCPP9126", "mirostat": 2, "mirostat_tau": 4, "mirostat_eta": 0.3, "dynatemp_range": 0, "dynatemp_exponent": 1, "smoothing_factor": 0, "banned_tokens": [], "render_special": True, "quiet": True, "stop_sequence": stop_tokens, "use_default_badwordsids": False, "bypass_eos": False, "prompt": final_prompt}
             url = "http://localhost:5001/api/extra/generate/stream/" if stream else "http://localhost:5001/api/v1/generate/"
-
             response = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, stream=stream)
+
             if response.status_code == 200:
                 if stream:
                     def stream_generator():
@@ -220,21 +179,14 @@ class AGIWorker:
                     if "results" in response_json and response_json["results"]:
                         resp = response_json["results"][0].get('text', '')
                         return clearText(resp)
-                    else:
-                        return ''
-            else:
-                return ''
-        else:
-            return ''
+                    else: return ''
+            else: return ''
+        else: return ''
 
     def load_audio_model(self): self.yunaListen = yunaListenPipe("mlx-community/parakeet-tdt-0.6b-v3", dtype=mx.float16)
 
     def load_voice_model(self):
-        if self.config["server"]["yuna_audio_mode"] == "hanasu":
-            self.voice_model = load_model_hanasu(
-                config_path=self.config['server']['voice_default_model'][0],
-                model_path=self.config['server']['voice_default_model'][1]
-            )
+        if self.config["server"]["yuna_audio_mode"] == "hanasu": self.voice_model = load_model_hanasu(config_path=self.config['server']['voice_default_model'][0], model_path=self.config['server']['voice_default_model'][1])
 
     def load_text_model(self):
         mode = self.config["server"].get("yuna_text_mode")
@@ -257,9 +209,9 @@ class AGIWorker:
         elif mode == "mlxvlm": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'][0])
 
     def load_kokoro_model(self, config, model_path): print("Kokoro is not available in this environment.")
-
     def export_audio(self, input_file, output_filename): AudioSegment.from_file(input_file).export(output_filename, format="mp3")
     def transcribe_audio(self, audio_file): return self.yunaListen.transcribe(audio_file).text.strip()
+
     def speak_text(self, text, output_filename=None):
         output_filename = f"static/audio/{uuid.uuid4()}.mp3"
         mode = self.config['server']['yuna_audio_mode']
@@ -268,11 +220,13 @@ class AGIWorker:
             os.system(f'say -o "static/audio/temp.aiff" {repr(text)}')
             self.export_audio("static/audio/temp.aiff", output_filename)
             os.remove("static/audio/temp.aiff")
+
         elif mode == "siri-pv":
             voice_model = self.config['server']['voice_default_model'][0]
             os.system(f'say -v {voice_model} -o "static/audio/temp.aiff" {repr(text)}')
             self.export_audio("static/audio/temp.aiff", output_filename)
             os.remove("static/audio/temp.aiff")
+
         elif mode == "hanasu":
             result = inference_hanasu(
                 model=self.voice_model,
@@ -292,8 +246,7 @@ class AGIWorker:
         from aiflow.models.kokoro.model import EmbeddingGenerator
         import re
 
-        with open(text_file, 'r', encoding='utf-8') as f:
-            text = f.read()
+        with open(text_file, 'r', encoding='utf-8') as f: text = f.read()
 
         def split_sentences(text):
             text = re.sub(r'\n+', ' ', text)
@@ -305,8 +258,7 @@ class AGIWorker:
                 if sentence:
                     punctuation = sentences[i + 1] if i + 1 < len(sentences) else ''
                     result.append(sentence + punctuation)
-            if len(sentences) % 2 == 1 and sentences[-1].strip():
-                result.append(sentences[-1].strip())
+            if len(sentences) % 2 == 1 and sentences[-1].strip(): result.append(sentences[-1].strip())
             return result
 
         sentences = split_sentences(text)
@@ -330,7 +282,7 @@ class AGIWorker:
         return ' '.join(filtered_sentences)
 
     def web_search(self, search_query):
-        answer, search_results, image_urls = search_web(search_query)
+        answer, search_results, image_urls = ValueError("Search function not implemented.")
         return {'answer': answer, 'results': search_results, 'images': image_urls}
 
     def blog_email(self, email, subject, message): pass

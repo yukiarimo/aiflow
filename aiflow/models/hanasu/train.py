@@ -10,12 +10,177 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from . import commons
 from . import utils
-from .data_utils import (DistributedBucketSampler, TextAudioSpeakerCollate, TextAudioSpeakerLoader)
-from .mel_processing import mel_spectrogram_torch, spec_to_mel_torch
+from .mel_processing import mel_spectrogram_torch
 from .models import (AVAILABLE_FLOW_TYPES,DurationDiscriminatorV2, MultiPeriodDiscriminator, SynthesizerTrn)
-from .text import symbols
+from .text import symbols, text_to_sequence
 torch.backends.cudnn.benchmark = True
+import random
+import torch.utils.data
 global_step = 0
+
+class TextAudioSpeakerLoader(torch.utils.data.Dataset):
+    """Loads audio, speaker_id, text pairs"""
+    def __init__(self, audiopaths_sid_text, hparams):
+        self.hparams = hparams
+        self.audiopaths_sid_text = utils.load_filepaths_and_text(audiopaths_sid_text)
+        self.max_wav_value = hparams.max_wav_value
+        self.sampling_rate = hparams.sampling_rate
+        self.filter_length = hparams.filter_length
+        self.hop_length = hparams.hop_length
+        self.win_length = hparams.win_length
+        self.n_mel_channels = getattr(hparams, "n_mel_channels", 128)
+        self.min_text_len = getattr(hparams, "min_text_len", 1)
+        self.max_text_len = getattr(hparams, "max_text_len", 5000)
+        self.min_audio_len = getattr(hparams, "min_audio_len", 8192)
+
+        random.seed(8)
+        random.shuffle(self.audiopaths_sid_text)
+        self._filter()
+
+    def _filter(self):
+        """Filter text & store spec lengths."""
+        audiopaths_sid_text_new, lengths = [], []
+        for audiopath, sid, text in self.audiopaths_sid_text:
+            if not os.path.isfile(audiopath): continue
+            if self.min_text_len <= len(text) <= self.max_text_len:
+                audiopaths_sid_text_new.append([audiopath, sid, text])
+                length = os.path.getsize(audiopath) // (2 * self.hop_length)
+                if length < self.min_audio_len // self.hop_length: continue
+                lengths.append(length)
+        self.audiopaths_sid_text = audiopaths_sid_text_new
+        self.lengths = lengths
+        print(len(self.lengths))
+
+    def get_audio_text_speaker_pair(self, audiopath_sid_text, language='en'):
+        audiopath, sid, text = audiopath_sid_text[0], audiopath_sid_text[1], audiopath_sid_text[2]
+        text_norm = text_to_sequence(text, language)
+        text = torch.LongTensor(text_norm)
+        spec, wav = self.get_audio(audiopath)
+        sid = self.get_sid(sid)
+        return (text, spec, wav, sid)
+
+    def get_audio(self, filename):
+        audio, sampling_rate = utils.load_wav_to_torch(filename)
+        if sampling_rate != self.sampling_rate: raise ValueError(f"{sampling_rate} SR doesn't match target {self.sampling_rate} SR")
+        audio_norm = (audio / self.max_wav_value).unsqueeze(0)
+
+        segment_size = self.hparams.train.segment_size
+        if audio_norm.size(1) < segment_size: audio_norm = torch.nn.functional.pad(audio_norm, (0, segment_size - audio_norm.size(1)), 'constant')
+
+        spec_filename = filename.replace(".wav", ".mel.pt")
+        if os.path.exists(spec_filename): spec = torch.load(spec_filename)
+        else:
+            spec = mel_spectrogram_torch(audio_norm, self.filter_length, self.n_mel_channels, self.sampling_rate, self.hop_length, self.win_length, self.hparams.mel_fmin, self.hparams.mel_fmax, center=False)
+            spec = torch.squeeze(spec, 0)
+            torch.save(spec, spec_filename)
+        return spec, audio_norm
+
+    def get_sid(self, sid): return torch.LongTensor([int(sid)])
+    def __getitem__(self, index): return self.get_audio_text_speaker_pair(self.audiopaths_sid_text[index])
+    def __len__(self): return len(self.audiopaths_sid_text)
+
+class TextAudioSpeakerCollate:
+    """Zero-pads model inputs and targets"""
+    def __init__(self, return_ids=False): self.return_ids = return_ids
+
+    def __call__(self, batch):
+        _, ids_sorted_decreasing = torch.sort(torch.LongTensor([x[1].size(1) for x in batch]), dim=0, descending=True)
+
+        max_text_len = max([len(x[0]) for x in batch])
+        max_spec_len = max([x[1].size(1) for x in batch])
+        max_wav_len = max([x[2].size(1) for x in batch])
+
+        text_lengths = torch.LongTensor(len(batch))
+        spec_lengths = torch.LongTensor(len(batch))
+        wav_lengths = torch.LongTensor(len(batch))
+        sid = torch.LongTensor(len(batch))
+
+        text_padded = torch.LongTensor(len(batch), max_text_len).zero_()
+        spec_padded = torch.FloatTensor(len(batch), batch[0][1].size(0), max_spec_len).zero_()
+        wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len).zero_()
+
+        for i, row_idx in enumerate(ids_sorted_decreasing):
+            row = batch[row_idx]
+            text, spec, wav = row[0], row[1], row[2]
+
+            text_padded[i, :text.size(0)] = text
+            text_lengths[i] = text.size(0)
+            spec_padded[i, :, :spec.size(1)] = spec
+            spec_lengths[i] = spec.size(1)
+            wav_padded[i, :, :wav.size(1)] = wav
+            wav_lengths[i] = wav.size(1)
+            sid[i] = row[3]
+
+        if self.return_ids: return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid, ids_sorted_decreasing
+        return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid
+
+class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
+    """Maintains similar input lengths in a batch."""
+    def __init__(self, dataset, batch_size, boundaries, num_replicas=None, rank=None, shuffle=True):
+        super().__init__(dataset, num_replicas=num_replicas, rank=rank, shuffle=shuffle)
+        self.lengths = dataset.lengths
+        self.batch_size = batch_size
+        self.boundaries = boundaries
+        self.buckets, self.num_samples_per_bucket = self._create_buckets()
+        self.total_size = sum(self.num_samples_per_bucket)
+        self.num_samples = self.total_size // self.num_replicas
+
+    def _create_buckets(self):
+        buckets = [[] for _ in range(len(self.boundaries) - 1)]
+        for i, length in enumerate(self.lengths):
+            idx_bucket = self._bisect(length)
+            if idx_bucket != -1: buckets[idx_bucket].append(i)
+
+        for i in range(len(buckets) - 1, -1, -1):
+            if not buckets[i]:
+                buckets.pop(i)
+                self.boundaries.pop(i + 1)
+
+        num_samples_per_bucket = []
+        for bucket in buckets:
+            len_bucket = len(bucket)
+            total_batch_size = self.num_replicas * self.batch_size
+            rem = (total_batch_size - (len_bucket % total_batch_size)) % total_batch_size
+            num_samples_per_bucket.append(len_bucket + rem)
+        return buckets, num_samples_per_bucket
+
+    def __iter__(self):
+        g = torch.Generator(); g.manual_seed(self.epoch)
+
+        if self.shuffle: indices = [torch.randperm(len(b), generator=g).tolist() for b in self.buckets]
+        else: indices = [list(range(len(b))) for b in self.buckets]
+
+        batches = []
+        for i, bucket in enumerate(self.buckets):
+            len_bucket = len(bucket)
+            ids_bucket = indices[i]
+            num_samples_bucket = self.num_samples_per_bucket[i]
+            rem = num_samples_bucket - len_bucket
+            ids_bucket += ids_bucket * (rem // len_bucket) + ids_bucket[:(rem % len_bucket)] # add extra samples
+            ids_bucket = ids_bucket[self.rank::self.num_replicas] # subsample
+
+            for j in range(len(ids_bucket) // self.batch_size): # batching
+                batch = [bucket[idx] for idx in ids_bucket[j * self.batch_size:(j + 1) * self.batch_size]]
+                batches.append(batch)
+
+        if self.shuffle:
+            batch_ids = torch.randperm(len(batches), generator=g).tolist()
+            batches = [batches[i] for i in batch_ids]
+        self.batches = batches
+
+        assert len(self.batches) * self.batch_size == self.num_samples
+        return iter(self.batches)
+
+    def _bisect(self, x, lo=0, hi=None):
+        if hi is None: hi = len(self.boundaries) - 1
+        if hi > lo:
+            mid = (hi + lo) // 2
+            if self.boundaries[mid] < x <= self.boundaries[mid+1]: return mid
+            elif x <= self.boundaries[mid]: return self._bisect(x, lo, mid)
+            else: return self._bisect(x, mid + 1, hi)
+        return -1
+
+    def __len__(self): return self.num_samples // self.batch_size
 
 def feature_loss(fmap_r, fmap_g):
     loss = 0
@@ -219,8 +384,6 @@ def run(rank, n_gpus, hps):
     g_checkpoint_path = utils.latest_checkpoint_path(hps.model_dir, "G_*.pth")
     if g_checkpoint_path is not None:
         try:
-            # Pass None for the optimizer to load only model weights, avoiding state mismatch errors.
-            # This is useful for fine-tuning with a modified model architecture.
             utils.load_checkpoint(g_checkpoint_path, net_g, None)
             global_step = 0
             epoch_str = 1

@@ -56,7 +56,6 @@ def get_config(config_path='static/config.json', config=None):
     }
 
     if not os.path.exists(config_path): return default_config
-
     mode = 'r' if config is None else 'w'
     with open(config_path, mode) as f: return json.load(f) if config is None else json.dump(config, f, indent=4)
 
@@ -70,51 +69,6 @@ def clearText(text):
     text = ' '.join(text.split()).strip()
     if text != original_text: return clearText(text)
     return text
-
-def search_web(query, base_url='https://www.google.com', process_data=False):
-    USER_AGENTS = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0'
-    ]
-    query = re.sub(r'[+\-\"\\/*^|<>~`]', '', query)
-    query = re.sub(r'\s+', ' ', query).strip()[:300]
-    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.5', 'Referer': 'https://duckduckgo.com/', 'DNT': '1', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'}
-    session = requests.Session()
-    for attempt in range(3):
-        try:
-            response = session.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            break
-        except requests.exceptions.RequestException as e:
-            if attempt < 2:
-                time.sleep(random.uniform(2, 5))
-            else:
-                return []
-    soup = BeautifulSoup(response.text, 'html.parser')
-    results = []
-    for result in soup.select('.result'):
-        try:
-            title_element = result.select_one('.result__a')
-            title = title_element.get_text().strip() if title_element else ""
-            url_element = result.select_one('.result__url')
-            url = f"https://{url_element.get_text().strip()}" if url_element else ""
-            link_element = result.select_one('a.result__a')
-            if link_element and link_element.has_attr('href'):
-                href = link_element['href']
-                if href.startswith('http') and '/duckduckgo.com/' not in href:
-                    url = href
-            desc_element = result.select_one('.result__snippet')
-            description = desc_element.get_text().strip() if desc_element else ""
-            site = url_element.get_text().strip() if url_element else ""
-            if title and (url or site):
-                results.append({'title': title, 'description': description, 'url': url, 'site': site})
-        except Exception:
-            continue
-    return results
-
-def get_transcript(url): pass
 
 def calculate_similarity(embedding1, embedding2):
     if isinstance(embedding1, torch.Tensor): embedding1 = embedding1.cpu().numpy()
