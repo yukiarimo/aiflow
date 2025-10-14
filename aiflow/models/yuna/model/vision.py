@@ -13,7 +13,7 @@ class VisionConfig:
     spatial_merge_size: int
     spatial_patch_size: int
     temporal_patch_size: int
-    intermediate_size: int = None
+    n_mlp: int = None
     hidden_act: str = "quick_gelu"
 
 class VisionRotaryEmbedding(nn.Module):
@@ -50,10 +50,10 @@ class PatchMerger(nn.Module):
     def __init__(self, dim: int, context_dim: int, spatial_merge_size: int = 2, config = None) -> None:
         super().__init__()
         self.spatial_merge_size = spatial_merge_size
-        self.hidden_size = context_dim * (spatial_merge_size**2)
-        if config and hasattr(config, 'intermediate_size') and config.intermediate_size is not None: self.ln_q = RMSNorm(context_dim, eps=1e-6)
+        self.n_embed = context_dim * (spatial_merge_size**2)
+        if config and hasattr(config, 'n_mlp') and config.n_mlp is not None: self.ln_q = RMSNorm(context_dim, eps=1e-6)
         else: self.ln_q = nn.LayerNorm(context_dim, eps=1e-6)
-        self.mlp = nn.Sequential(nn.Linear(self.hidden_size, self.hidden_size), nn.GELU(), nn.Linear(self.hidden_size, dim))
+        self.mlp = nn.Sequential(nn.Linear(self.n_embed, self.n_embed), nn.GELU(), nn.Linear(self.n_embed, dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.ln_q(x) # Normalize the input features first. Input x shape: (B, L, C), e.g., (1, 1840, 1280). Output shape is still (1, 1840, 1280)
@@ -106,10 +106,10 @@ class VisionMlp(nn.Module):
         super().__init__()
         dim = config.n_embed
 
-        if config.intermediate_size is not None:
-            self.gate_proj = nn.Linear(dim, config.intermediate_size, bias=True)
-            self.up_proj = nn.Linear(dim, config.intermediate_size, bias=True)
-            self.down_proj = nn.Linear(config.intermediate_size, dim, bias=True)
+        if config.n_mlp is not None:
+            self.gate_proj = nn.Linear(dim, config.n_mlp, bias=True)
+            self.up_proj = nn.Linear(dim, config.n_mlp, bias=True)
+            self.down_proj = nn.Linear(config.n_mlp, dim, bias=True)
             self.act_fn = self._get_activation_fn(config.hidden_act)
             self.is_gated = True
 
@@ -136,9 +136,9 @@ class VisionMlp(nn.Module):
         else: raise ValueError(f"Unsupported activation: {act_name}")
 
 class RMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
+    def __init__(self, n_embed, eps=1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.weight = nn.Parameter(torch.ones(n_embed))
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
@@ -152,7 +152,7 @@ class YunaVisionBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        if config.intermediate_size is not None:
+        if config.n_mlp is not None:
             self.norm1 = RMSNorm(config.n_embed, eps=1e-6)
             self.norm2 = RMSNorm(config.n_embed, eps=1e-6)
 

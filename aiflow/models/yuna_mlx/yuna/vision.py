@@ -50,13 +50,13 @@ class PatchEmbed(nn.Module):
 class PatchMerger(nn.Module):
     def __init__(self, config):
         super().__init__()
-        context_dim, dim = config.embed_dim, config.hidden_size
+        context_dim, dim = config.embed_dim, config.n_embed
         spatial_merge_size = config.spatial_merge_size
-        hidden_size = context_dim * (spatial_merge_size**2)
+        n_embed = context_dim * (spatial_merge_size**2)
 
-        if hasattr(config, 'intermediate_size') and getattr(config, 'intermediate_size', None) is not None: self.ln_q = RMSNorm(context_dim, eps=1e-6) # Add conditional norm layer for compatibility
+        if hasattr(config, 'n_mlp') and getattr(config, 'n_mlp', None) is not None: self.ln_q = RMSNorm(context_dim, eps=1e-6) # Add conditional norm layer for compatibility
         else: self.ln_q = nn.LayerNorm(context_dim, eps=1e-6)
-        self.mlp_fc1, self.mlp_act, self.mlp_fc2 = nn.Linear(hidden_size, hidden_size), nn.GELU(), nn.Linear(hidden_size, dim)
+        self.mlp_fc1, self.mlp_act, self.mlp_fc2 = nn.Linear(n_embed, n_embed), nn.GELU(), nn.Linear(n_embed, dim)
 
     def __call__(self, x):
         x = self.ln_q(x).reshape(-1, self.mlp_fc1.weight.shape[1])

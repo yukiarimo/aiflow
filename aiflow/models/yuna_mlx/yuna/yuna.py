@@ -22,8 +22,17 @@ class VisionConfig(BaseModelConfig):
     spatial_patch_size: int = 14
     spatial_merge_size: int = 2
     temporal_patch_size: int = 2
-    intermediate_size: int = 5120
+    n_mlp: int = 5120
     hidden_act: str = "quick_gelu"
+
+    @property
+    def embed_dim(self): return self.n_embed
+
+    @property
+    def depth(self): return self.n_layer
+
+    @property
+    def num_heads(self): return self.n_heads
 
 @dataclass
 class TextConfig(BaseModelConfig):
@@ -50,12 +59,17 @@ class ModelConfig(BaseModelConfig):
     eos_token_id: int = 151643
 
     @classmethod
-    def from_dict(cls, params): return cls(text_config=TextConfig.from_dict(params), vision_config=VisionConfig.from_dict(params.get("vision_config", {})), audio_config=params.get("audio_config", None), **{k: v for k, v in params.items() if k in inspect.signature(cls).parameters})
+    def from_dict(cls, params):
+        text_config = TextConfig.from_dict(params.get("text_config", params))
+        vision_config = VisionConfig.from_dict(params.get("vision_config", {}))
+        audio_config = params.get("audio_config", None)
+        model_params = {k: v for k, v in params.items() if k in inspect.signature(cls).parameters and k not in ['text_config', 'vision_config', 'audio_config']}
+        return cls(text_config=text_config, vision_config=vision_config, audio_config=audio_config, **model_params)
 
 class YunaRotaryEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
-        dim = config.hidden_size // config.num_attention_heads
+        dim = config.n_embed // config.n_heads
         self.inv_freq = 1.0 / (config.rope_theta ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
 
     def __call__(self, x, position_ids):
@@ -80,15 +94,15 @@ def _apply_rotary_pos_emb(q, k, cos, sin):
 class YunaAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.n_heads = config.num_attention_heads
-        self.n_kv_heads = config.num_key_value_heads
-        self.head_dim = config.hidden_size // self.n_heads
+        self.n_heads = config.n_heads
+        self.n_kv_heads = config.n_kv_heads
+        self.head_dim = config.n_embed // self.n_heads
         self.scale = self.head_dim**-0.5
 
-        self.q_proj = nn.Linear(config.hidden_size, self.n_heads * self.head_dim, bias=True)
-        self.k_proj = nn.Linear(config.hidden_size, self.n_kv_heads * self.head_dim, bias=True)
-        self.v_proj = nn.Linear(config.hidden_size, self.n_kv_heads * self.head_dim, bias=True)
-        self.o_proj = nn.Linear(self.n_heads * self.head_dim, config.hidden_size, bias=False)
+        self.q_proj = nn.Linear(config.n_embed, self.n_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(config.n_embed, self.n_kv_heads * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(config.n_embed, self.n_kv_heads * self.head_dim, bias=True)
+        self.o_proj = nn.Linear(self.n_heads * self.head_dim, config.n_embed, bias=False)
 
     def __call__(self, x, cos, sin, mask, cache):
         B, T, C = x.shape
@@ -109,18 +123,18 @@ class YunaAttention(nn.Module):
 class YunaMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.gate_proj = nn.Linear(config.n_embed, config.n_mlp, bias=False)
+        self.up_proj = nn.Linear(config.n_embed, config.n_mlp, bias=False)
+        self.down_proj = nn.Linear(config.n_mlp, config.n_embed, bias=False)
 
     def __call__(self, x): return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
 
 class YunaBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = nn.RMSNorm(config.n_embed, eps=config.rms_norm_eps)
         self.self_attn = YunaAttention(config)
-        self.post_attention_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(config.n_embed, eps=config.rms_norm_eps)
         self.mlp = YunaMLP(config)
 
     def __call__(self, x, cos, sin, mask, cache):
@@ -132,10 +146,10 @@ class YunaBlock(nn.Module):
 class YunaModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.n_embed)
         self.rotary_emb = YunaRotaryEmbedding(config)
-        self.layers = [YunaBlock(config) for _ in range(config.num_hidden_layers)]
-        self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.layers = [YunaBlock(config) for _ in range(config.n_layer)]
+        self.norm = nn.RMSNorm(config.n_embed, eps=config.rms_norm_eps)
 
     def __call__(self, x, position_ids, cache=None, mask=None):
         cos, sin = self.rotary_emb(x, position_ids)
@@ -150,30 +164,13 @@ class Model(nn.Module):
         super().__init__()
         self.config = config
 
-        # Map from simple names to MLX model names
-        text_config_mlx = TextConfig(
-            hidden_size=config.text_config.n_embed,
-            num_hidden_layers=config.text_config.n_layer,
-            intermediate_size=config.text_config.n_mlp,
-            num_attention_heads=config.text_config.n_heads,
-            num_key_value_heads=config.text_config.n_kv_heads,
-            **{k: v for k, v in config.text_config.__dict__.items() if k not in ['n_embed', 'n_layer', 'n_mlp', 'n_heads', 'n_kv_heads']}
-        )
-        vision_config_mlx = VisionConfig(
-            embed_dim=config.vision_config.n_embed,
-            hidden_size=config.vision_config.output_n_embed,
-            depth=config.vision_config.n_layer,
-            num_heads=config.vision_config.n_heads,
-            **{k: v for k, v in config.vision_config.__dict__.items() if k not in ['n_embed', 'output_n_embed', 'n_layer', 'n_heads']}
-        )
-
-        self.vision_tower = YunaVisionEncoder(vision_config_mlx)
+        self.vision_tower = YunaVisionEncoder(config.vision_config)
         if config.audio_config:
             self.audio_tower = YunaAudioEncoder()
-            self.audio_projector = AudioProjector(self.audio_tower.config.output_dim, text_config_mlx.hidden_size)
+            self.audio_projector = AudioProjector(self.audio_tower.config.output_dim, config.text_config.n_embed)
 
-        self.language_model = YunaModel(text_config_mlx)
-        self.lm_head = nn.Linear(text_config_mlx.hidden_size, config.vocab_size, bias=False) if not text_config_mlx.tie_word_embeddings else None
+        self.language_model = YunaModel(config.text_config)
+        self.lm_head = nn.Linear(config.text_config.n_embed, config.vocab_size, bias=False) if not config.text_config.tie_word_embeddings else None
 
     def _get_position_ids(self, input_ids, d_image=None, cache_offset=0):
         B, T = input_ids.shape
@@ -386,13 +383,16 @@ def sampler(logits, temp, top_p, top_k):
         remove_mask = cumulative_probs > top_p
         remove_mask[:, 1:] = remove_mask[:, :-1]
         remove_mask[:, 0] = False
-        indices_to_remove = mx.zeros_like(remove_mask, dtype=mx.bool_)
-        mx.scatter(indices_to_remove, sorted_indices, remove_mask, axis=-1)
+
+        # Create mask by scattering values back to original positions
+        indices_to_remove = mx.zeros_like(logits).astype(mx.bool_)
+        batch_indices = mx.arange(logits.shape[0])[:, None]
+        indices_to_remove[batch_indices, sorted_indices] = remove_mask
         logits = mx.where(indices_to_remove, -mx.inf, logits)
 
     return mx.random.categorical(logits)
 
-def generate(model, processor, prompt, image_paths, video_paths, audio_paths, max_tokens, temperature, top_p, top_k, repetition_penalty, repetition_context_size, frequency_penalty, presence_penalty, logit_bias, eos_token_ids, cache):
+def generate(model, processor, prompt, image_paths, video_paths, audio_paths, max_tokens, temperature, top_p, top_k, repetition_penalty, repetition_context_size, frequency_penalty, presence_penalty, logit_bias, eos_token_ids, cache, stop_strings=None):
     inputs = processor(prompt, image_paths=image_paths, video_paths=video_paths, audio_paths=audio_paths)
     prompt_tokens = inputs["input_ids"]
 
@@ -411,8 +411,68 @@ def generate(model, processor, prompt, image_paths, video_paths, audio_paths, ma
 
         if token_id in eos_token_ids: break
         generated_token_ids.append(token_id)
+        logits, cache = model(y[:, None], cache=cache)
+        y = logits[:, -1, :]
+
+    raw_text = processor.tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+    final_text = raw_text
+    return final_text, cache
+
+def stream_generate(model, processor, prompt, image_paths, video_paths, audio_paths, max_tokens, temperature, top_p, top_k, repetition_penalty, repetition_context_size, frequency_penalty, presence_penalty, logit_bias, eos_token_ids, cache, stop_strings=["</>"]):
+    inputs = processor(prompt, image_paths=image_paths, video_paths=video_paths, audio_paths=audio_paths)
+    prompt_tokens = inputs["input_ids"]
+
+    if cache is None: cache = [KVCache() for _ in model.language_model.layers]
+    logits, _ = model(prompt_tokens, **({k: v for k, v in inputs.items() if k != 'input_ids'} if cache[0].offset == 0 else {}), cache=cache)
+    y = logits[:, -1, :]
+    generated_token_ids = []
+    previous_text = ""
+    active_stops = [s for s in (stop_strings or processor.tokenizer.stop_strings) if s]
+    max_stop_len = max((len(s) for s in active_stops), default=0)
+    buffer = ""
+
+    for _ in range(max_tokens):
+        context = generated_token_ids[-repetition_context_size:]
+        if repetition_penalty > 1.0: y = apply_repetition_penalty(y, context, repetition_penalty)
+        if frequency_penalty > 0.0 or presence_penalty > 0.0: y = apply_frequency_presence_penalty(y, context, frequency_penalty, presence_penalty)
+        y = apply_logit_bias(y, logit_bias)
+        y = sampler(y, temperature, top_p, top_k)
+        token_id = y.item()
+
+        if token_id in eos_token_ids: break
+        generated_token_ids.append(token_id)
+        current_text = processor.tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+        new_text = current_text[len(previous_text):]
+        previous_text = current_text
+
+        if not new_text:
+            logits, cache = model(y[:, None], cache=cache)
+            y = logits[:, -1, :]
+            continue
+
+        buffer += new_text
+
+        stop_hit = None
+        for stop in active_stops:
+            idx = buffer.find(stop)
+            if idx != -1 and (stop_hit is None or idx < stop_hit[0]): stop_hit = (idx, len(stop))
+
+        if stop_hit:
+            idx, _ = stop_hit
+            if idx > 0: yield buffer[:idx]
+            return
+
+        if max_stop_len == 0:
+            if buffer:
+                yield buffer
+                buffer = ""
+        else:
+            emit_len = len(buffer) - (max_stop_len - 1)
+            if emit_len > 0:
+                yield buffer[:emit_len]
+                buffer = buffer[emit_len:]
 
         logits, cache = model(y[:, None], cache=cache)
         y = logits[:, -1, :]
 
-    return processor.tokenizer.decode(generated_token_ids), cache
+    if buffer: yield buffer

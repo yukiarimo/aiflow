@@ -45,12 +45,26 @@ class YunaAudioEncoderLayer(nn.Module):
         x = x + self.fc2(nn.gelu(self.fc1(self.final_layer_norm(x))))
         return x
 
+class SinusoidsPositionEmbedding(nn.Module):
+    def __init__(self, length, channels, max_timescale=10000):
+        super().__init__()
+        if channels % 2 != 0: raise ValueError("SinusoidsPositionEmbedding needs even channels input")
+
+        log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
+        inv_timescales = mx.exp(-log_timescale_increment * mx.arange(channels // 2, dtype=mx.float32))
+        scaled_time = mx.arange(length, dtype=mx.float32)[:, None] * inv_timescales[None, :]
+
+        positional_embedding = mx.concatenate([mx.sin(scaled_time), mx.cos(scaled_time)], axis=1)
+        self.positional_embedding = positional_embedding
+
+    def __call__(self, seqlen): return self.positional_embedding[:seqlen, :]
+
 class YunaAudioEncoder(nn.Module):
     def __init__(self, config=YunaAudioEncoderConfig()):
         super().__init__(); self.config = config
         self.conv1 = nn.Conv1d(config.num_mel_bins, config.d_model, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(config.d_model, config.d_model, kernel_size=3, stride=2, padding=1)
-        self.pos_conv_embed = nn.SinusoidalPositionalEncoding(config.d_model, max_len=config.max_source_positions)
+        self.pos_conv_embed = SinusoidsPositionEmbedding(config.max_source_positions, config.d_model)
         self.layers = [YunaAudioEncoderLayer(config) for _ in range(config.encoder_layers)]
         self.ln_post = nn.LayerNorm(config.d_model)
         self.avg_pooler = nn.AvgPool1d(2, stride=2)

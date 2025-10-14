@@ -30,7 +30,7 @@ class StreamingDetokenizer:
         return ""
 
 class NaiveStreamingDetokenizer(StreamingDetokenizer):
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, trim_space=None):
         self._tokenizer = tokenizer
         self.reset()
 
@@ -88,10 +88,27 @@ class BPEStreamingDetokenizer(StreamingDetokenizer):
             current_text = bytearray(self._byte_decoder[c] for c in self._unflushed).decode("utf-8", "replace")
             self.text += current_text if self.text or not self.trim_space else _remove_space(current_text)
             self._unflushed = v
-        else: self._unflushed += v
+        else:
+            # Check if v is a punctuation and _unflushed ends with a letter to avoid adding spaces after punctuation
+            if v and self._unflushed and len(v) == 1 and v[0] in ",.:;!?" and len(self._unflushed) > 0 and self._unflushed[-1].isalnum():
+                self._unflushed += v
+            else:
+                self._unflushed += v
 
     def finalize(self):
-        current_text = bytearray(self._byte_decoder[c] for c in self._unflushed).decode("utf-8")
+        if not self._unflushed: return
+
+        try:
+            current_text = bytearray(self._byte_decoder[c] for c in self._unflushed).decode("utf-8")
+        except:
+            # If byte decoding fails, fall back to treating as raw text
+            current_text = self._unflushed
+
+        # Add proper spacing around punctuation
+        if current_text and len(current_text) > 1:
+            # Add space after periods, commas, etc. if followed by a letter
+            current_text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', current_text)
+
         self.text += current_text if self.text or not self.trim_space else _remove_space(current_text)
         self._unflushed = ""
 
@@ -108,32 +125,66 @@ class BPEStreamingDetokenizer(StreamingDetokenizer):
         cls._byte_decoder = char_to_bytes
 
 class TokenizerWrapper:
-    def __init__(self, tokenizer, model_path, detokenizer_class=BPEStreamingDetokenizer):
-        self._tokenizer, self._detokenizer = tokenizer, detokenizer_class(tokenizer)
+    def __init__(self, tokenizer, model_path, detokenizer_class=NaiveStreamingDetokenizer):
+        self._tokenizer = tokenizer
+        self._detokenizer = detokenizer_class(tokenizer, trim_space=True)
+
         special_tokens = set()
         tokenizer_config_path = os.path.join(model_path, "tokenizer_config.json")
         if os.path.exists(tokenizer_config_path):
-            with open(tokenizer_config_path, "r") as f: config = json.load(f)
+            with open(tokenizer_config_path, "r") as f:
+                config = json.load(f)
             for key in ["bos_token", "eos_token", "unk_token", "pad_token", "sep_token"]:
                 token_info = config.get(key)
                 if token_info:
                     token_str = token_info.get("content") if isinstance(token_info, dict) else token_info
-                    if token_str: special_tokens.add(token_str)
+                    if token_str:
+                        special_tokens.add(token_str)
             added_tokens = config.get("additional_special_tokens", [])
             if isinstance(added_tokens, list):
                 for token in added_tokens:
                     token_str = token.get("content") if isinstance(token, dict) else token
-                    if token_str: special_tokens.add(token_str)
+                    if token_str:
+                        special_tokens.add(token_str)
+
+        tokenizer_json_path = os.path.join(model_path, "tokenizer.json")
+        if os.path.exists(tokenizer_json_path):
+            with open(tokenizer_json_path, "r", encoding="utf-8") as f:
+                tokenizer_data = json.load(f)
+            for token_info in tokenizer_data.get("added_tokens", []):
+                if isinstance(token_info, dict):
+                    token_str = token_info.get("content")
+                    if token_str and (token_info.get("special") or (token_str.startswith("<") and token_str.endswith(">"))):
+                        special_tokens.add(token_str)
+                elif isinstance(token_info, str) and token_info.startswith("<") and token_info.endswith(">"):
+                    special_tokens.add(token_info)
+
+        self.special_token_strings = sorted(special_tokens, key=len, reverse=True)
+        self.stop_strings = [tok for tok in self.special_token_strings if tok.startswith("</") and tok.endswith(">")]
+        if not self.stop_strings:
+            self.stop_strings = [tok for tok in self.special_token_strings if tok.startswith("<") and tok.endswith(">")]
+
         vocab = self._tokenizer.get_vocab()
-        self.all_special_ids = [vocab[s] for s in special_tokens if s in vocab]
+        self.all_special_ids = [vocab[s] for s in self.special_token_strings if s in vocab]
 
     @property
     def detokenizer(self):
         self._detokenizer.reset()
         return self._detokenizer
 
+    def strip_special_tokens(self, text):
+        cleaned = text
+        for token in self.special_token_strings:
+            cleaned = cleaned.replace(token, "")
+        return cleaned
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        decoded = self._tokenizer.decode(token_ids)
+        return self.strip_special_tokens(decoded) if skip_special_tokens else decoded
+
     def __getattr__(self, attr):
-        if attr == "detokenizer": return self.detokenizer
+        if attr == "detokenizer":
+            return self.detokenizer
         return getattr(self._tokenizer, attr)
 
 def load(model_path: str):
@@ -180,7 +231,8 @@ def load_config(model_path):
 
 class YunaProcessor:
     def __init__(self, model_path):
-        self.tokenizer = Tokenizer.from_file(str(model_path / "tokenizer.json"))
+        raw_tokenizer = Tokenizer.from_file(str(model_path / "tokenizer.json"))
+        self.tokenizer = TokenizerWrapper(raw_tokenizer, str(model_path))
         with open(model_path / "config.json", "r") as f: self.config = json.load(f)
 
         self.placeholders = {"image": "<|vision_start|><|image_pad|><|vision_end|>", "video": "<|vision_start|><|video_pad|><|vision_end|>", "audio": "<|vision_start|><|quad_start|><|vision_end|>"}

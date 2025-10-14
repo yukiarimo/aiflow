@@ -83,11 +83,9 @@ class AGIWorker:
                                 all_image_paths.append(image_path)
                                 image_count += 1
 
-                # Append img tokens for historical user messages that had images
-                if role == user: history_str += f"<{role}>{message_content}{'<image>' * image_count}</{role}>\n"
+                if role == user: history_str += f"<{role}>{message_content}{'<image>' * image_count}</{role}>\n" # Append img tokens for historical messages that had images
                 else: history_str += f"<{role}>{message_content}</{role}>\n"
 
-        # Build final prompt, including the current user message if applicable
         if append_current_user and useHistory:
             current_prompt = text or ""
             current_image_count = len(image_paths or [])
@@ -106,56 +104,50 @@ class AGIWorker:
         else: final_prompt = f"{yunaConfig['ai']['bos'][0]}\n<dialog>\n{final_prompt}" if yunaConfig["ai"]["bos"][1] else f"<dialog>\n{final_prompt}"
         stop_tokens = yunaConfig["ai"].get("stop", [])
 
-        kwargs_all = {
-            "max_tokens": yunaConfig["ai"]["max_new_tokens"],
-            "temperature": yunaConfig["ai"]["temperature"],
-            "top_p": yunaConfig["ai"]["top_p"],
-            "top_k": yunaConfig["ai"]["top_k"],
-            "repetition_penalty": yunaConfig["ai"]["repetition_penalty"],
-            "repetition_context_size": 128,
-            "eos_tokens": stop_tokens,
-            "skip_special_tokens": True,
-        }
+        kwargs_all = { "max_tokens": yunaConfig["ai"]["max_new_tokens"], "temperature": yunaConfig["ai"]["temperature"], "top_p": yunaConfig["ai"]["top_p"], "top_k": yunaConfig["ai"]["top_k"], "repetition_penalty": yunaConfig["ai"]["repetition_penalty"], "repetition_context_size": 128 }
+
+        if mode == "yunamlx":
+            kwargs_yunamlx = {
+                **kwargs_all,
+                "frequency_penalty": 0.0,
+                "presence_penalty": 0.0,
+                "logit_bias": {},
+                "eos_token_ids": [self.tokenizer.tokenizer.encode("<|endoftext|>").ids[0]] + [self.tokenizer.tokenizer.encode(token).ids[0] for token in stop_tokens if token],
+                "cache": None,
+            }
+
+            if stream:
+                response_generator = stream_generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, image_paths=all_image_paths if all_image_paths else None, video_paths=None, audio_paths=None, stop_strings=stop_tokens if stop_tokens else ["</>"], **kwargs_yunamlx)
+                def stream_wrapper():
+                    for chunk_text in response_generator: yield chunk_text
+                return stream_wrapper()
+
+            else:
+                response, _ = generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, image_paths=all_image_paths if all_image_paths else None, video_paths=None, audio_paths=None, stop_strings=stop_tokens if stop_tokens else ["</>"], **kwargs_yunamlx)
+                return clearText(response)
 
         if mode == "mlx":
-            response_generator = generate(
-                model=self.text_model,
-                tokenizer=self.tokenizer,
-                prompt=final_prompt,
-                verbose=False,
-                **kwargs_all
-            )
+            response_generator = generate(model=self.text_model, tokenizer=self.tokenizer, prompt=final_prompt, verbose=False, eos_tokens=stop_tokens, skip_special_tokens=True, **kwargs_all)
 
             if stream:
                 def stream_wrapper():
-                    for chunk_text in response_generator: yield clearText(chunk_text)
+                    for chunk_text in response_generator: yield chunk_text
                 return stream_wrapper()
+
             else:
                 full_response = "".join(response_generator)
                 return clearText(full_response)
 
         if mode == "mlxvlm":
             image_to_pass = all_image_paths[0] if all_image_paths else None
-
             if stream:
-                response_generator = stream_generate(
-                    model=self.text_model,
-                    processor=self.tokenizer,
-                    prompt=final_prompt,
-                    image=image_to_pass,
-                    **kwargs_all
-                )
+                response_generator = stream_generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, image=image_to_pass, **kwargs_all)
                 def stream_wrapper():
                     for chunk_text in response_generator: yield chunk_text
                 return stream_wrapper()
+
             else:
-                response_generator = stream_generate(
-                    model=self.text_model,
-                    processor=self.tokenizer,
-                    prompt=final_prompt,
-                    image=image_to_pass,
-                    **kwargs_all
-                )
+                response_generator = stream_generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, image=image_to_pass, **kwargs_all)
                 full_response = "".join(list(response_generator))
                 return clearText(full_response)
 
@@ -207,6 +199,7 @@ class AGIWorker:
             )
         elif mode == "mlx": self.text_model, self.tokenizer =  load(self.config['server']['yuna_default_model'][0])
         elif mode == "mlxvlm": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'][0])
+        elif mode == "yunamlx": self.text_model, self.tokenizer = load(self.config['server']['yuna_default_model'][0])
 
     def load_kokoro_model(self, config, model_path): print("Kokoro is not available in this environment.")
     def export_audio(self, input_file, output_filename): AudioSegment.from_file(input_file).export(output_filename, format="mp3")

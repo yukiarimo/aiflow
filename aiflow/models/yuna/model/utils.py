@@ -20,9 +20,6 @@ class Processor:
         self.yuna_model = yuna_model
         self.placeholders = {"image": "<|vision_start|><|image_pad|><|vision_end|>", "video": "<|vision_start|><|video_pad|><|vision_end|>", "audio": "<|vision_start|><|quad_start|><|vision_end|>"}
         self.chat_tokens = ["<dialog>", "<yuki>", "</yuki>", "<yuna>", "</yuna>", "<bos>", "<|endoftext|>"]
-        tokens_to_add = list(self.placeholders.values()) + self.chat_tokens
-        tokens_to_add.extend(["<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>", "<|quad_start|>"])
-        self.tokenizer.add_special_tokens(list(set(tokens_to_add)))
         self.image_pad_token_id = self.tokenizer.encode("<|image_pad|>").ids[0]
         self.video_pad_token_id = self.tokenizer.encode("<|video_pad|>").ids[0]
         self.audio_chunk_token_id = self.tokenizer.encode("<|quad_start|>").ids[0]

@@ -60,6 +60,7 @@ def get_config(config_path='static/config.json', config=None):
     with open(config_path, mode) as f: return json.load(f) if config is None else json.dump(config, f, indent=4)
 
 def clearText(text):
+    text = text[0] if isinstance(text, tuple) else text
     original_text = text
     replacements = [('</yuki>', ''), ('</yuna>', ''), ('<yuki>', ''), ('<yuna>', '')]
     for old, new in replacements: text = text.replace(old, new)
