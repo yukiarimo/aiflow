@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import remove_weight_norm, weight_norm
 from typing import Tuple
-from utils import get_padding
+from .utils import get_padding
 LRELU_SLOPE = 0.1
 
 class HifiganGenerator(torch.nn.Module):

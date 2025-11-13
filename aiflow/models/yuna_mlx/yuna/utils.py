@@ -236,52 +236,76 @@ class YunaProcessor:
         with open(model_path / "config.json", "r") as f: self.config = json.load(f)
 
         self.placeholders = {"image": "<|vision_start|><|image_pad|><|vision_end|>", "video": "<|vision_start|><|video_pad|><|vision_end|>", "audio": "<|vision_start|><|quad_start|><|vision_end|>"}
-        self.placeholder_token_ids = {k: self.tokenizer.encode(v.split('><')[1]+'>').ids[0] for k, v in self.placeholders.items()}
-        self.tokenizer.pad_token_id = self.tokenizer.encode("<|endoftext|>").ids[0]
+        self.vision_start_token_id = self.config.get("vision_start_token_id") or self.tokenizer.encode("<|vision_start|>").ids[0]
+        self.vision_end_token_id = self.config.get("vision_end_token_id") or self.tokenizer.encode("<|vision_end|>").ids[0]
+        self.placeholder_token_ids = {}
+        for name, token_str in self.placeholders.items():
+            config_key = f"{name}_token_id"
+            token_id = self.config.get(config_key)
+            if token_id is None:
+                token_id = self.tokenizer.encode(token_str).ids[0]
+            self.placeholder_token_ids[name] = token_id
 
         vis_conf = self.config.get("vision_config", {})
         self.IMAGE_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
         self.IMAGE_STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
         self.sps, self.tps, self.sms = vis_conf.get("spatial_patch_size", 14), vis_conf.get("temporal_patch_size", 2), vis_conf.get("spatial_merge_size", 2)
 
+    def _modality_tokens(self, modality, count):
+        token_id = self.placeholder_token_ids.get(modality)
+        if token_id is None or count <= 0:
+            return []
+        tokens = [self.vision_start_token_id] if self.vision_start_token_id is not None else []
+        tokens.extend([token_id] * count)
+        if self.vision_end_token_id is not None:
+            tokens.append(self.vision_end_token_id)
+        return tokens
+
     def __call__(self, messages, image_paths=None, video_paths=None, audio_paths=None, add_generation_prompt=False):
         text = self.apply_chat_template(messages, add_generation_prompt) if isinstance(messages, list) else messages
         all_pixels, all_d_image, all_audio_features, all_audio_lens = [], [], [], []
         img_idx, vid_idx, aud_idx = 0, 0, 0
-        final_text_parts = []
+        token_chunks = []
         last_idx = 0
         placeholder_pattern = re.compile("|".join(re.escape(p) for p in self.placeholders.values()))
 
-        for match in placeholder_pattern.finditer(text):
-            final_text_parts.append(text[last_idx:match.start()])
-            placeholder = match.group(0)
+        print(f"Receieeve: {text}, image_paths={image_paths}, video_paths={video_paths}, audio_paths={audio_paths}")
 
+        for match in placeholder_pattern.finditer(text):
+            prefix = text[last_idx:match.start()]
+            if prefix:
+                token_chunks.extend(self.tokenizer.encode(prefix).ids)
+
+            placeholder = match.group(0)
             if placeholder == self.placeholders["image"] and img_idx < len(image_paths or []):
                 pixels, d_image, num_tokens = self._process_image(Image.open(image_paths[img_idx]))
                 all_pixels.append(pixels); all_d_image.append(d_image)
-                final_text_parts.append(self.tokenizer.decode([self.placeholder_token_ids["image"]]) * num_tokens)
+                token_chunks.extend(self._modality_tokens("image", num_tokens))
                 img_idx += 1
 
             elif placeholder == self.placeholders["video"] and vid_idx < len(video_paths or []):
                 frames, d_images, num_tokens_frame = self._process_video(video_paths[vid_idx])
                 all_pixels.extend(frames); all_d_image.extend(d_images)
-                final_text_parts.append(self.tokenizer.decode([self.placeholder_token_ids["video"]]) * num_tokens_frame * len(frames))
+                token_chunks.extend(self._modality_tokens("video", num_tokens_frame * len(frames)))
                 vid_idx += 1
 
             elif placeholder == self.placeholders["audio"] and aud_idx < len(audio_paths or []):
                 features, lens, num_tokens = self._process_audio(audio_paths[aud_idx])
                 all_audio_features.append(features); all_audio_lens.append(lens)
-                final_text_parts.append(self.tokenizer.decode([self.placeholder_token_ids["audio"]]) * num_tokens)
+                token_chunks.extend(self._modality_tokens("audio", num_tokens))
                 aud_idx += 1
 
             last_idx = match.end()
 
-        final_text_parts.append(text[last_idx:])
-        input_ids = mx.array([self.tokenizer.encode("".join(final_text_parts)).ids], dtype=mx.int32)
+        suffix = text[last_idx:]
+        if suffix:
+            token_chunks.extend(self.tokenizer.encode(suffix).ids)
+
+        input_ids = mx.array([token_chunks], dtype=mx.int32)
         return {"input_ids": input_ids, "pixel_values": mx.concatenate(all_pixels, axis=0) if all_pixels else None, "d_image": mx.concatenate(all_d_image, axis=0) if all_d_image else None, "audio_features": mx.stack(all_audio_features, axis=0) if all_audio_features else None, "audio_feature_lens": mx.array(all_audio_lens, dtype=mx.int32) if all_audio_lens else None}
 
     def apply_chat_template(self, messages, add_generation_prompt=True):
-        prompt = "<bos><dialog>"
+        prompt = "<|endoftext|><dialog>"
         for msg in messages: prompt += f"<{msg['role']}>{msg['content']}</{msg['role']}>"
         if add_generation_prompt: prompt += "<yuna>"
         return prompt
@@ -335,5 +359,8 @@ def load(path_or_hf_repo):
     model = Model(model_config)
     weights = mx.load(str(model_path / "model.safetensors"))
     model.load_weights(list(weights.items()), strict=False)
+
+    if "quantization" in config: print(f"[INFO] Loading quantized model with config: {config['quantization']}")
+
     processor = YunaProcessor(model_path)
     return model, processor

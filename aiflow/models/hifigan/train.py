@@ -227,7 +227,7 @@ def train_model(rank, world_size, args):
                 for j, (wavs, mels, tgts) in enumerate(validation_loader, 1):
                     wavs, mels, tgts = wavs.to(rank), mels.to(rank), tgts.to(rank)
 
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         wavs_ = generator(mels.squeeze(1))
                         mels_ = melspectrogram(wavs_)
 

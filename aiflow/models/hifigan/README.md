@@ -30,7 +30,7 @@ elif mel.dim() == 4:  # If shape is [1, 1, n_mels, time_frames]
 print(f"Final mel shape for model: {mel.shape}")
 
 # Generate audio - HiFi-GAN models typically just do forward pass
-with torch.no_grad():
+with torch.inference_mode():
     wav = model(mel)
 
 # Save wav - assuming 48kHz sample rate based on your generator config

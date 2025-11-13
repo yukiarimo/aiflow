@@ -6,6 +6,7 @@ from typing import Optional, Any
 from .vision import YunaVisionEncoder
 from .audio import YunaAudioEncoder, AudioProjector
 from safetensors.torch import save_file
+from torch.utils.checkpoint import checkpoint
 import json
 
 @dataclass
@@ -124,10 +125,15 @@ class YunaBlock(nn.Module):
 class YunaModel(nn.Module):
     def __init__(self, config):
         super().__init__()
+        super().__init__()
         self.embed_tokens = nn.Embedding(config.vocab_size, config.n_embed)
         self.rotary_emb = YunaRotaryEmbedding(config)
         self.layers = nn.ModuleList([YunaBlock(config) for _ in range(config.n_layer)])
         self.norm = YunaRMSNorm(config.n_embed, eps=config.rms_norm_eps)
+        self.gradient_checkpointing = False
+
+    def gradient_checkpointing_enable(self): self.gradient_checkpointing = True
+    def gradient_checkpointing_disable(self): self.gradient_checkpointing = False
 
     def forward(self, x, position_ids, use_cache=False, past_key_values=None):
         cos, sin = self.rotary_emb(x, position_ids)
@@ -135,10 +141,15 @@ class YunaModel(nn.Module):
 
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            x, present_kv = layer(x, cos, sin, past_kv=past_kv)
-            if use_cache: next_cache.append(present_kv)
-        x = self.norm(x)
 
+            if self.gradient_checkpointing and self.training and not use_cache and past_kv is None:
+                def custom_forward(tensor): return layer(tensor, cos, sin, past_kv=None)[0]
+                x = checkpoint(custom_forward, x, use_reentrant=False)
+                present_kv = None
+            else: x, present_kv = layer(x, cos, sin, past_kv=past_kv)
+            if use_cache: next_cache.append(present_kv)
+
+        x = self.norm(x)
         return x, (next_cache if use_cache else None)
 
 class Yuna(nn.Module):
@@ -228,7 +239,7 @@ class Yuna(nn.Module):
         logits = torch.matmul(x, self.model.embed_tokens.weight.T) if self.lm_head is None else self.lm_head(x)
         return logits, next_cache
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(self, inputs, max_new_tokens, temperature, top_p, top_k, repetition_penalty, repetition_context_size, negative_prompt_ids, eos_token_ids, cache=None):
         input_ids = inputs["input_ids"]
         pixels = inputs.get("pixels")
@@ -284,7 +295,7 @@ class LongTermMemory:
         self.memory_path.mkdir(exist_ok=True)
         self.load()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _get_embedding(self, text):
         """Creates an embedding for a chunk of text."""
         inputs = self.processor([text], device=self.device)

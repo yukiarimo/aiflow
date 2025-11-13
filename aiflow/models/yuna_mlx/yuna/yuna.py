@@ -172,6 +172,52 @@ class Model(nn.Module):
         self.language_model = YunaModel(config.text_config)
         self.lm_head = nn.Linear(config.text_config.n_embed, config.vocab_size, bias=False) if not config.text_config.tie_word_embeddings else None
 
+    def _merge_modal_embeddings(self, input_ids, token_embeds, modal_embeds, modal_mask, modal_name="modal"):
+        if modal_embeds is None:
+            return token_embeds
+
+        modal_mask = modal_mask.astype(mx.bool_)
+        total_slots = int(mx.sum(modal_mask).item())
+        if total_slots == 0:
+            return token_embeds
+
+        if modal_embeds.ndim > 2:
+            modal_embeds = modal_embeds.reshape(-1, modal_embeds.shape[-1])
+        modal_embeds = modal_embeds.astype(token_embeds.dtype)
+
+        batch_outputs = []
+        feature_start = 0
+        batch_size = input_ids.shape[0]
+
+        for batch_idx in range(batch_size):
+            mask = modal_mask[batch_idx]
+            num_slots = int(mx.sum(mask).item())
+
+            if num_slots > 0:
+                batch_features = modal_embeds[feature_start : feature_start + num_slots]
+                if batch_features.shape[0] != num_slots:
+                    raise ValueError(
+                        f"Expected {num_slots} {modal_name} embeddings but received {batch_features.shape[0]} for batch index {batch_idx}."
+                    )
+                feature_start += num_slots
+
+                cumsum = mx.cumsum(mask.astype(mx.int32))
+                feature_indices = mx.where(mask, cumsum - 1, 0)
+                gathered = batch_features[feature_indices]
+                mask_expanded = mx.expand_dims(mask, axis=-1)
+                merged = mx.where(mask_expanded, gathered, token_embeds[batch_idx])
+            else:
+                merged = token_embeds[batch_idx]
+
+            batch_outputs.append(merged)
+
+        if feature_start != modal_embeds.shape[0]:
+            raise ValueError(
+                f"Consumed {feature_start} of {modal_embeds.shape[0]} available {modal_name} embeddings; counts must match."
+            )
+
+        return mx.stack(batch_outputs, axis=0)
+
     def _get_position_ids(self, input_ids, d_image=None, cache_offset=0):
         B, T = input_ids.shape
         is_multimodal = (d_image is not None) and (mx.sum((input_ids == self.config.image_token_id) | (input_ids == self.config.video_token_id)) > 0)
@@ -180,58 +226,93 @@ class Model(nn.Module):
             positions = mx.arange(cache_offset, cache_offset + T, dtype=mx.int32)
             return mx.repeat(mx.expand_dims(positions, 0), repeats=B, axis=0)
 
+        d_image_list = d_image.astype(mx.int32).tolist() if d_image is not None else []
+        image_meta_idx = 0
         all_pos_ids = []
+
         for i in range(B):
             seq = input_ids[i]
-            seq_idx, image_idx, pos_chunks, position_id = 0, 0, [], cache_offset
+            seq_positions = []
+            seq_idx = 0
+            position_id = cache_offset
+            local_image_offset = image_meta_idx
 
             while seq_idx < T:
-                token_id = seq[seq_idx].item()
-                is_image_token = (token_id == self.config.image_token_id or token_id == self.config.video_token_id)
+                token_id = int(seq[seq_idx].item())
+                is_image_token = (
+                    token_id == self.config.image_token_id
+                    or token_id == self.config.video_token_id
+                )
 
-                if is_image_token and image_idx < (d_image.shape[0] if d_image is not None else 0):
-                    t, h, w = map(int, d_image[image_idx])
+                if is_image_token and local_image_offset < len(d_image_list):
+                    t, h, w = map(int, d_image_list[local_image_offset])
                     num_patches = t * h * w
-                    t_idx = mx.repeat(mx.arange(t).reshape(t, 1, 1), h, axis=1).repeat(w, axis=2).flatten()
-                    h_idx = mx.repeat(mx.arange(h).reshape(1, h, 1), t, axis=0).repeat(w, axis=2).flatten()
-                    w_idx = mx.repeat(mx.arange(w).reshape(1, 1, w), t, axis=0).repeat(h, axis=1).flatten()
-                    pos_vision = mx.stack([t_idx, h_idx, w_idx]) + position_id
-                    pos_chunks.append(pos_vision)
-                    position_id = pos_vision.max().item() + 1
-                    seq_idx += num_patches
-                    image_idx += 1
+                    available_tokens = T - seq_idx
+                    if available_tokens <= 0:
+                        break
+
+                    patch_len = min(num_patches, available_tokens)
+                    patch_positions = mx.arange(patch_len, dtype=mx.int32) + position_id
+                    seq_positions.append(patch_positions)
+                    position_id += patch_len
+                    seq_idx += patch_len
+                    local_image_offset += 1
                 else:
-                    pos = mx.full((3, 1), position_id, dtype=mx.int32)
-                    pos_chunks.append(pos); position_id += 1; seq_idx += 1
+                    seq_positions.append(mx.array([position_id], dtype=mx.int32))
+                    position_id += 1
+                    seq_idx += 1
 
-            if not pos_chunks: continue
-            pos_ids_example = mx.concatenate(pos_chunks, axis=1)
+            image_meta_idx = local_image_offset
 
-            if pos_ids_example.shape[1] > T: pos_ids_example = pos_ids_example[:, :T]
-            elif pos_ids_example.shape[1] < T:
-                 padding = mx.zeros((3, T - pos_ids_example.shape[1]), dtype=mx.int32)
-                 pos_ids_example = mx.concatenate([pos_ids_example, padding], axis=1)
+            if not seq_positions:
+                all_pos_ids.append(mx.full((T,), cache_offset, dtype=mx.int32))
+                continue
+
+            pos_ids_example = mx.concatenate(seq_positions, axis=0)
+            if pos_ids_example.shape[0] > T:
+                pos_ids_example = pos_ids_example[:T]
+            elif pos_ids_example.shape[0] < T:
+                extra_len = T - pos_ids_example.shape[0]
+                padding = mx.arange(extra_len, dtype=mx.int32) + position_id
+                pos_ids_example = mx.concatenate([pos_ids_example, padding], axis=0)
+
             all_pos_ids.append(pos_ids_example)
 
         return mx.stack(all_pos_ids, axis=0)
 
-    def __call__(self, input_ids, pixel_values=None, d_image=None, audio_features=None, audio_feature_lens=None, cache=None):
+    def __call__(self, input_ids, pixel_values=None, d_image=None, audio_features=None, audio_feature_lens=None, cache=None, style_embedding=None, style_strength=0.0):
         cache_offset = cache[0].offset if cache and cache[0] is not None else 0
         pos_ids = self._get_position_ids(input_ids, d_image, cache_offset)
         embeds = self.language_model.embed_tokens(input_ids)
 
         if cache_offset == 0:
-            if pixel_values is not None and self.vision_tower is not None:
-                img_embeds = self.vision_tower(pixel_values, d_image)
-                img_pos = (input_ids == self.config.image_token_id) | (input_ids == self.config.video_token_id)
-                if mx.sum(img_pos) > 0: embeds[img_pos] = img_embeds.astype(embeds.dtype)
-            if audio_features is not None and hasattr(self, 'audio_tower'):
+            if pixel_values is not None and self.vision_tower is not None and d_image is not None:
+                vision_embeds = self.vision_tower(pixel_values, d_image)
+                vision_mask = (input_ids == self.config.image_token_id) | (input_ids == self.config.video_token_id)
+                embeds = self._merge_modal_embeddings(
+                    input_ids,
+                    embeds,
+                    vision_embeds,
+                    vision_mask,
+                    modal_name="vision",
+                )
+            if audio_features is not None and hasattr(self, "audio_tower"):
                 audio_embeds = self.audio_projector(self.audio_tower(audio_features, audio_feature_lens))
-                audio_pos = (input_ids == self.config.audio_token_id)
-                if mx.sum(audio_pos) > 0: embeds[audio_pos] = audio_embeds.astype(embeds.dtype)
+                audio_mask = input_ids == self.config.audio_token_id
+                embeds = self._merge_modal_embeddings(
+                    input_ids,
+                    embeds,
+                    audio_embeds,
+                    audio_mask,
+                    modal_name="audio",
+                )
 
         x, cache = self.language_model(embeds, pos_ids, cache)
-        return (self.language_model.embed_tokens.as_linear(x) if self.lm_head is None else self.lm_head(x)), cache
+        if style_embedding is not None and style_strength > 0.0:
+            x = apply_style_guidance(x, style_embedding, style_strength)
+
+        logits = self.language_model.embed_tokens.as_linear(x) if self.lm_head is None else self.lm_head(x)
+        return logits, cache
 
     @property
     def layers(self): return self.language_model.layers
@@ -367,37 +448,113 @@ def apply_logit_bias(logits, logit_bias):
     logits[:, indices] += values
     return logits
 
-def sampler(logits, temp, top_p, top_k):
+def sampler(logits, temp, top_p, top_k, typical_p=0.95, min_p=1e-1):
     if temp == 0: return mx.argmax(logits, axis=-1)
-    logits = logits / temp
 
-    if 0 < top_k < logits.shape[-1]:
+    logits = logits.astype(mx.float32)
+    vocab = logits.shape[-1]
+    eps = mx.array(1e-8, dtype=logits.dtype)
+
+    raw_probs = mx.softmax(logits, axis=-1)
+    entropy = -mx.sum(raw_probs * mx.log(raw_probs + eps), axis=-1, keepdims=True)
+    max_entropy = mx.log(mx.array([vocab], dtype=logits.dtype))
+    entropy_ratio = entropy / mx.maximum(max_entropy, eps)
+
+    base_temp = mx.array(temp, dtype=logits.dtype)
+    adaptive_temp = base_temp * (0.7 + 0.3 * entropy_ratio)
+    adaptive_temp = mx.maximum(adaptive_temp, mx.array(1e-3, dtype=logits.dtype))
+    logits = logits / adaptive_temp
+
+    logits = logits + mx.random.normal(shape=logits.shape, scale=1e-4, dtype=logits.dtype)
+    probs = mx.softmax(logits, axis=-1)
+
+    # Fix: Create zeros array and then convert to boolean type
+    remove_mask = mx.zeros_like(probs).astype(mx.bool_)
+    if 0 < top_k < vocab:
         kth_vals = -mx.partition(-logits, top_k - 1, axis=-1)[..., top_k - 1 : top_k]
-        logits = mx.where(logits < kth_vals, -mx.inf, logits)
+        remove_mask = remove_mask | (logits < kth_vals)
+
+    batch_idx = mx.arange(probs.shape[0])[:, None]
 
     if 0 < top_p < 1.0:
-        probs = mx.softmax(logits.astype(mx.float32), axis=-1)
-        sorted_indices = mx.argsort(probs, axis=-1)[:, ::-1]
-        sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
-        cumulative_probs = mx.cumsum(sorted_probs, axis=-1)
-        remove_mask = cumulative_probs > top_p
-        remove_mask[:, 1:] = remove_mask[:, :-1]
-        remove_mask[:, 0] = False
+        sorted_idx = mx.argsort(probs, axis=-1)[:, ::-1]
+        sorted_probs = mx.take_along_axis(probs, sorted_idx, axis=-1)
+        cumulative = mx.cumsum(sorted_probs, axis=-1)
+        sorted_remove = cumulative > top_p
+        sorted_remove[:, 0] = False
+        top_p_mask = mx.zeros_like(remove_mask)
+        top_p_mask[batch_idx, sorted_idx] = sorted_remove
+        remove_mask = remove_mask | top_p_mask
 
-        # Create mask by scattering values back to original positions
-        indices_to_remove = mx.zeros_like(logits).astype(mx.bool_)
-        batch_indices = mx.arange(logits.shape[0])[:, None]
-        indices_to_remove[batch_indices, sorted_indices] = remove_mask
-        logits = mx.where(indices_to_remove, -mx.inf, logits)
+    if 0 < typical_p < 1.0:
+        log_probs = mx.log(probs + eps)
+        shifted = mx.abs((-log_probs) - entropy)
+        typical_idx = mx.argsort(shifted, axis=-1)
+        typical_probs = mx.take_along_axis(probs, typical_idx, axis=-1)
+        typical_cum = mx.cumsum(typical_probs, axis=-1)
+        typical_remove = typical_cum > typical_p
+        typical_remove[:, 0] = False
+        typical_mask = mx.zeros_like(remove_mask)
+        typical_mask[batch_idx, typical_idx] = typical_remove
+        remove_mask = remove_mask | typical_mask
 
-    return mx.random.categorical(logits)
+    if min_p > 0.0:
+        remove_mask = remove_mask | (probs < min_p)
 
-def generate(model, processor, prompt, image_paths, video_paths, audio_paths, max_tokens, temperature, top_p, top_k, repetition_penalty, repetition_context_size, frequency_penalty, presence_penalty, logit_bias, eos_token_ids, cache, stop_strings=None):
+    filtered_logits = mx.where(remove_mask, -mx.inf, logits)
+    finite_mask = mx.isfinite(filtered_logits)
+    all_invalid = mx.logical_not(mx.any(finite_mask, axis=-1, keepdims=True))
+    filtered_logits = mx.where(all_invalid, logits, filtered_logits)
+
+    max_logits = mx.max(filtered_logits, axis=-1, keepdims=True)
+    stabilized = filtered_logits - max_logits
+    log_probs = filtered_logits - (max_logits + mx.log(mx.sum(mx.exp(stabilized), axis=-1, keepdims=True) + eps))
+
+    return mx.random.categorical(log_probs.astype(mx.float32))
+
+def apply_style_guidance(hidden_states, style_embedding, strength=0.3):
+    if style_embedding is None or strength <= 0.0:
+        return hidden_states
+
+    style_vec = style_embedding.astype(hidden_states.dtype)
+    if style_vec.ndim == 1:
+        style_vec = style_vec[None, :]
+    style_vec = style_vec / (mx.linalg.norm(style_vec, ord=2, axis=-1, keepdims=True) + 1e-8)
+    style_vec = style_vec[:, None, :]  # (1, 1, D)
+
+    target_hidden = hidden_states[:, -1:, :]
+    target_norm = target_hidden / (mx.linalg.norm(target_hidden, ord=2, axis=-1, keepdims=True) + 1e-8)
+    guided_last = (1.0 - strength) * target_norm + strength * style_vec
+    guided_last = guided_last * mx.linalg.norm(target_hidden, ord=2, axis=-1, keepdims=True)
+
+    prefix = hidden_states[:, :-1, :]
+    return mx.concatenate([prefix, guided_last], axis=1)
+
+def generate(model, processor, prompt, image_paths, video_paths, audio_paths, max_tokens, temperature, top_p, top_k, repetition_penalty, repetition_context_size, frequency_penalty, presence_penalty, logit_bias, eos_token_ids, cache, stop_strings=None, style_text=None, style_strength=0.3):
     inputs = processor(prompt, image_paths=image_paths, video_paths=video_paths, audio_paths=audio_paths)
     prompt_tokens = inputs["input_ids"]
 
+    # Encode style guidance if provided
+    style_embedding = None
+    if style_text:
+        style_inputs = processor(style_text, image_paths=None, video_paths=None, audio_paths=None)
+        style_ids = style_inputs["input_ids"]
+        style_embeds = model.language_model.embed_tokens(style_ids)
+        style_pos_ids = model._get_position_ids(style_ids)
+        style_hidden, _ = model.language_model(style_embeds, style_pos_ids)
+        style_embedding = mx.mean(style_hidden, axis=1)
+        mx.eval(style_embedding)
+
     if cache is None: cache = [KVCache() for _ in model.language_model.layers]
-    logits, _ = model(prompt_tokens, **({k: v for k, v in inputs.items() if k != 'input_ids'} if cache[0].offset == 0 else {}), cache=cache)
+
+    initial_kwargs = {k: v for k, v in inputs.items() if k != "input_ids"} if cache[0].offset == 0 else {}
+    logits, cache = model(
+        prompt_tokens,
+        **initial_kwargs,
+        cache=cache,
+        style_embedding=style_embedding,
+        style_strength=style_strength,
+    )
     y = logits[:, -1, :]
     generated_token_ids = []
 
@@ -407,13 +564,20 @@ def generate(model, processor, prompt, image_paths, video_paths, audio_paths, ma
         if frequency_penalty > 0.0 or presence_penalty > 0.0: y = apply_frequency_presence_penalty(y, context, frequency_penalty, presence_penalty)
         y = apply_logit_bias(y, logit_bias)
         y = sampler(y, temperature, top_p, top_k)
-        token_id = y.item()
+        token_id = int(y.item())
 
-        if token_id in eos_token_ids: break
+        if token_id in eos_token_ids:
+            break
         generated_token_ids.append(token_id)
-        logits, cache = model(y[:, None], cache=cache)
-        y = logits[:, -1, :]
 
+        next_ids = mx.array([[token_id]], dtype=prompt_tokens.dtype)
+        logits, cache = model(
+            next_ids,
+            cache=cache,
+            style_embedding=style_embedding,
+            style_strength=style_strength,
+        )
+        y = logits[:, -1, :]
     raw_text = processor.tokenizer.decode(generated_token_ids, skip_special_tokens=False)
     final_text = raw_text
     return final_text, cache

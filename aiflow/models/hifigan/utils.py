@@ -117,7 +117,7 @@ def load_checkpoint(
 
 def hifigan(checkpoint_path="model.pth", map_location=None, **kwargs):
     from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
-    from generator import HifiganGenerator # Use relative import
+    from .generator import HifiganGenerator # Use relative import
     hifigan = HifiganGenerator() # Assumes default HifiganGenerator params are okay
     ckpt_path = checkpoint_path
     print(f"Loading HiFi-GAN checkpoint from: {ckpt_path}")

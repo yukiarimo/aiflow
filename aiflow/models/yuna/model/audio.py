@@ -215,12 +215,16 @@ def get_feat_extract_output_lengths(input_lengths):
     output_lengths = (input_lengths - 2) // 2 + 1
     return input_lengths, output_lengths
 
-def audio_to_mel_features(audio_path, sr=48000, n_fft=400, hop_length=160, n_mels=128):
+def audio_to_mel_features(audio_path, sr=48000, n_fft=400, hop_length=160, n_mels=128, min_duration=0.5):
     """
     Loads audio and computes log-mel spectrogram features.
     """
     audio, _ = librosa.load(audio_path, sr=sr, mono=True)
+    min_samples = int(min_duration * sr)
+    if len(audio) < min_samples: raise ValueError(f"Audio file {audio_path} is too short ({len(audio)} samples, minimum {min_samples})")
     mel_spectrogram = librosa.feature.melspectrogram(y=audio, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels)
     log_mel = librosa.power_to_db(mel_spectrogram, ref=1.0)
     features = torch.from_numpy(log_mel).float()
+
+    if features.shape[1] < 8: raise ValueError(f"Audio file {audio_path} has too few frames ({features.shape[1]}, minimum 8)")
     return features, features.shape[1]

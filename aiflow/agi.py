@@ -25,7 +25,7 @@ def load_conditional_imports(config):
         globals()['load'] = load
 
     if text_mode == "mlxvlm":
-        from mlxvlm import load, generate, stream_generate
+        from mlx_vlm import load, generate, stream_generate
         globals()['generate'] = generate
         globals()['load'] = load
         globals()['stream_generate'] = stream_generate
@@ -83,14 +83,14 @@ class AGIWorker:
                                 all_image_paths.append(image_path)
                                 image_count += 1
 
-                if role == user: history_str += f"<{role}>{message_content}{'<image>' * image_count}</{role}>\n" # Append img tokens for historical messages that had images
+                if role == user: history_str += f"<{role}>{message_content}{'<|vision_start|><|image_pad|><|vision_end|>' * image_count}</{role}>\n" # Append img tokens for historical messages that had images
                 else: history_str += f"<{role}>{message_content}</{role}>\n"
 
         if append_current_user and useHistory:
             current_prompt = text or ""
             current_image_count = len(image_paths or [])
             all_image_paths.extend(image_paths or [])
-            final = f"{history_str}<{user}>{current_prompt}{'<image>' * current_image_count}</{user}>\n<{asst}>"
+            final = f"{history_str}<{user}>{current_prompt}{'<|vision_start|><|image_pad|><|vision_end|>' * current_image_count}</{user}>\n<{asst}>"
 
         return final, all_image_paths
 
@@ -143,7 +143,8 @@ class AGIWorker:
             if stream:
                 response_generator = stream_generate(model=self.text_model, processor=self.tokenizer, prompt=final_prompt, image=image_to_pass, **kwargs_all)
                 def stream_wrapper():
-                    for chunk_text in response_generator: yield chunk_text
+                    for chunk in response_generator: 
+                        yield chunk.text  # Extract .text here instead
                 return stream_wrapper()
 
             else:

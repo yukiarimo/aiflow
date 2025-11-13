@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset
-from model.processor import Processor
+from model.utils import Processor
 from model.yuna import Yuna
 import json
 
@@ -62,8 +62,31 @@ def make_collate_fn(processor, max_seq_len):
         batch_inputs = []
         for ex in batch:
             try:
+                # Pre-validate audio files before processing
+                audio_paths = ex.get("audio_paths", [])
+                valid_audio = True
+                
+                for audio_path in audio_paths:
+                    try:
+                        import librosa
+                        duration = librosa.get_duration(path=audio_path)
+                        if not (0.5 <= duration <= 20.0):
+                            print(f"Skipping sample: audio {audio_path} duration {duration:.2f}s is out of range [0.5s, 20s]")
+                            valid_audio = False
+                            break
+                    except Exception as e:
+                        print(f"Skipping sample: failed to check audio duration for {audio_path}: {e}")
+                        valid_audio = False
+                        break
+                
+                if not valid_audio:
+                    continue
+                
                 inputs = processor(
-                    messages=ex["chat"], image_paths=ex.get("image_paths"), audio_paths=ex.get("audio_paths"), add_generation_prompt=False
+                    messages=ex["chat"],
+                    image_paths=ex.get("image_paths"),
+                    audio_paths=audio_paths,
+                    add_generation_prompt=False
                 )
                 if inputs["input_ids"].shape[1] > max_seq_len: continue
                 labels = inputs["input_ids"].clone()
@@ -72,7 +95,7 @@ def make_collate_fn(processor, max_seq_len):
                 if processor.audio_chunk_token_id != -1: labels[labels == processor.audio_chunk_token_id] = -100
                 inputs["labels"] = labels
                 batch_inputs.append(inputs)
-            except Exception as e:
+            except (ValueError, RuntimeError) as e:
                 print(f"Skipping a sample due to error: {e}")
                 continue
 
@@ -257,7 +280,7 @@ if __name__ == "__main__":
 #     --jsonl_path mixed_dataset.jsonl \
 #     --audio_dir wavs \
 #     --images_dir images \
-#     --train_modules llm audio_tower audio_projector \
+#     --train_modules llm audio_tower audio_projector \ # this will fine-tune the LLM and audio components
 #     --devices 1 \
 #     --batch_size 2 \
 #     --grad_accum 4 \

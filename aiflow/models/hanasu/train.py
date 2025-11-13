@@ -30,7 +30,7 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         self.win_length = hparams.win_length
         self.n_mel_channels = getattr(hparams, "n_mel_channels", 128)
         self.min_text_len = getattr(hparams, "min_text_len", 1)
-        self.max_text_len = getattr(hparams, "max_text_len", 5000)
+        self.max_text_len = getattr(hparams, "max_text_len", 20000)
         self.min_audio_len = getattr(hparams, "min_audio_len", 8192)
 
         random.seed(8)
@@ -694,7 +694,7 @@ def train_and_evaluate(
 
 def evaluate(hps, generator, eval_loader, writer_eval):
     generator.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         x, x_lengths, spec, spec_lengths, y, y_lengths, speakers = None, None, None, None, None, None, None
         for batch_idx, (
             x,
