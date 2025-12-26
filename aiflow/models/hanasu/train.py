@@ -68,8 +68,14 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         if audio_norm.size(1) < segment_size: audio_norm = torch.nn.functional.pad(audio_norm, (0, segment_size - audio_norm.size(1)), 'constant')
 
         spec_filename = filename.replace(".wav", ".mel.pt")
-        if os.path.exists(spec_filename): spec = torch.load(spec_filename)
+        if os.path.exists(spec_filename):
+            spec = torch.load(spec_filename)
+            if spec.size(1) < segment_size // self.hop_length:
+                spec = None
         else:
+            spec = None
+
+        if spec is None:
             spec = mel_spectrogram_torch(audio_norm, self.filter_length, self.n_mel_channels, self.sampling_rate, self.hop_length, self.win_length, self.hparams.mel_fmin, self.hparams.mel_fmax, center=False)
             spec = torch.squeeze(spec, 0)
             torch.save(spec, spec_filename)
