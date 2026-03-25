@@ -3,5 +3,8 @@ include LICENSE.md
 include CONTRIBUTING.md
 include CODE_OF_CONDUCT.md
 include SECURITY.md
+include requirements.txt
+include setup.py
 include .github/*
 include aiflow/*
+include notebooks/*

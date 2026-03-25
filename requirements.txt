@@ -7,7 +7,6 @@ scipy
 tensorboard
 onnx
 onnxruntime
-.DS_Store
 epub2txt
 mlx
 datasets
@@ -22,4 +21,13 @@ tokenizers
 pillow
 typer
 rich
-lightning
+transformers
+mlx-lm
+flask
+flask_cors
+bs4
+jwt
+Caldav
+pytz
+unidecode
+pyopenjtalk

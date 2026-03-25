@@ -1,0 +1,136 @@
+import inspect
+import math
+import mlx.core as mx
+import mlx.nn as nn
+from PIL import Image
+from transformers.image_processing_utils import BaseImageProcessor as ImageProcessor
+from transformers.image_processing_utils import get_size_dict
+from transformers.image_utils import ChannelDimension, PILImageResampling
+
+
+class LanguageModelOutput:
+	def __init__(self, logits, hidden_states=None, cross_attention_states=None, encoder_outputs=None):
+		self.logits = logits
+		self.hidden_states = hidden_states
+		self.cross_attention_states = cross_attention_states
+		self.encoder_outputs = encoder_outputs
+
+
+class BaseModelConfig:
+	@classmethod
+	def from_dict(cls, params):
+		return cls(**{k: v for k, v in params.items() if k in inspect.signature(cls).parameters})
+
+	def to_dict(self):
+		return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
+class BaseImageProcessor(ImageProcessor):
+	def __init__(self, image_mean=(0.5, 0.5, 0.5), image_std=(0.5, 0.5, 0.5), size=(384, 384), crop_size=None, resample=PILImageResampling.BICUBIC, rescale_factor=1 / 255, data_format=ChannelDimension.FIRST):
+		crop_size = crop_size if crop_size is not None else {"height": 384, "width": 384}
+		crop_size = get_size_dict(crop_size, default_to_square=True, param_name="crop_size")
+		self.image_mean = image_mean
+		self.image_std = image_std
+		self.size = size
+		self.resample = resample
+		self.rescale_factor = rescale_factor
+		self.data_format = data_format
+		self.crop_size = crop_size
+
+	def preprocess(self, images):
+		pass
+
+
+def expand2square(pil_img, background_color):
+	width, height = pil_img.size
+	if width == height:
+		return pil_img
+	elif width > height:
+		result = Image.new(pil_img.mode, (width, width), background_color)
+		result.paste(pil_img, (0, (width - height) // 2))
+		return result
+	else:
+		result = Image.new(pil_img.mode, (height, height), background_color)
+		result.paste(pil_img, ((height - width) // 2, 0))
+		return result
+
+
+def check_array_shape(arr):
+	shape = arr.shape
+	if len(shape) == 4:
+		out_channels, kH, KW, _ = shape
+		if (out_channels >= kH) and (out_channels >= KW) and (kH == KW):
+			return True
+		else:
+			return False
+	elif len(shape) == 3:
+		_, kW, out_channels = shape
+		if kW >= out_channels:
+			return True
+		else:
+			return False
+	else:
+		return False
+
+
+def check_activation_stats(name, tensor):
+	print(f"--- Activation Stats: {name} ---")
+	has_nan = mx.isnan(tensor).any()
+	has_inf = mx.isinf(tensor).any()
+	if has_nan:
+		print(f"WARNING: Found NaN in {name}")
+	if has_inf:
+		print(f"WARNING: Found Inf in {name}")
+
+	min_val = mx.min(tensor).item()
+	max_val = mx.max(tensor).item()
+	mean_val = mx.mean(tensor).item()
+	std_val = mx.std(tensor).item()
+	print(f"  Shape: {tensor.shape}")
+	print(f"  Min: {min_val:.4f}, Max: {max_val:.4f}")
+	print(f"  Mean: {mean_val:.4f}, Std: {std_val:.4f}")
+	print("-" * (len(name) + 24))
+
+
+def pixel_shuffle(input_tensor, shuffle_ratio):
+	batch_size, num_patches, channels = input_tensor.shape
+	patch_size = int(math.sqrt(num_patches))
+	input_tensor = input_tensor.reshape(batch_size, patch_size, patch_size, -1)
+	batch_size, height, width, channels = input_tensor.shape
+	reshaped_tensor = input_tensor.reshape(batch_size, height, int(width * shuffle_ratio), int(channels / shuffle_ratio))
+	reshaped_tensor = reshaped_tensor.transpose(0, 2, 1, 3)
+	reshaped_tensor = reshaped_tensor.reshape(batch_size, int(height * shuffle_ratio), int(width * shuffle_ratio), int(channels / (shuffle_ratio**2)))
+	reshaped_tensor = reshaped_tensor.transpose(0, 2, 1, 3)
+	output_tensor = reshaped_tensor.reshape(batch_size, -1, reshaped_tensor.shape[-1])
+	return output_tensor
+
+
+def interpolate(pos_embed, size, mode="cubic", align_corners=False):
+	input_dim = pos_embed.ndim
+	original_shape = pos_embed.shape
+
+	if input_dim == 3:
+		pos_embed = pos_embed.reshape(1, *original_shape)
+
+	h_src, w_src = pos_embed.shape[-2:]
+	h_dst, w_dst = size
+	scale_h = h_dst / h_src
+	scale_w = w_dst / w_src
+	upsampler = nn.Upsample(scale_factor=(scale_h, scale_w), mode=mode, align_corners=align_corners)
+	result = upsampler(pos_embed)
+
+	if input_dim == 3:
+		return result.reshape(original_shape[0], *size)
+	return result
+
+
+@mx.compile
+def chunked_attention(queries, keys, values, scale, chunk_size):
+	L = queries.shape[2]
+	outputs = []
+	for i in range(0, L, chunk_size):
+		end_idx = min(i + chunk_size, L)
+		q_chunk = queries[:, :, i:end_idx, :]
+		chunk_output = mx.fast.scaled_dot_product_attention(q_chunk, keys, values, scale=scale)
+		outputs.append(chunk_output)
+	return mx.concatenate(outputs, axis=2)
