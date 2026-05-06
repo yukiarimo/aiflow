@@ -1671,7 +1671,7 @@ def export_model(config_path, model_path, output_path, device="cpu"):
 	print("Initial ONNX export complete.")
 
 
-def inference(model=None, text=None, sid=0, noise_scale=0.5, noise_scale_w=0.5, length_scale=1.0, min_period_duration=24.0, device="mps", stream=False, output_file=None, language="en-us", language_map=None, language_speakers=None):
+def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, length_scale=1.0, min_period_duration=24.0, device="mps", stream=False, output_file=None, language="en-us", language_map=None, language_speakers=None):
 	if language_map is None:
 		language_map = {"en-us": "en-us", "ru": "ru", "ja": "ja"}
 

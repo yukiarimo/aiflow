@@ -29,6 +29,12 @@ def parse_arguments():
 	parser.add_argument("--system", type=str, default=None, help="System message for the model.")
 	parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Maximum number of tokens to generate.")
 	parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE, help="Temperature for sampling.")
+	parser.add_argument("--top-p", type=float, default=DEFAULT_TOP_P, help="Top P for sampling.")
+	parser.add_argument("--mirostat-tau", type=float, default=0.0, help="Mirostat target entropy (tau). 0 disables.")
+	parser.add_argument("--mirostat-eta", type=float, default=0.1, help="Mirostat learning rate.")
+	parser.add_argument("--dynamic-temp-min", type=float, default=None, help="Dynamic temperature minimum.")
+	parser.add_argument("--dynamic-temp-max", type=float, default=None, help="Dynamic temperature maximum.")
+	parser.add_argument("--logit-noise", type=float, default=0.0, help="Amount of Gaussian noise added to logits.")
 	parser.add_argument("--chat", action="store_true", help="Chat in multi-turn style.")
 	parser.add_argument("--verbose", action="store_false", help="Detailed output.")
 	parser.add_argument("--eos-tokens", type=str, nargs="+", default=None, help="EOS tokens to add to the tokenizer.")
@@ -112,12 +118,35 @@ def top_p_sampling(logits, top_p, temperature):
 def generate_step(input_ids, model, pixel_values, mask, max_tokens=256, temperature=0.0, repetition_penalty=None, repetition_context_size=20, top_p=1.0, logit_bias=None, prompt_cache=None, max_kv_size=None, kv_bits=None, kv_group_size=64, quantized_kv_start=0, num_candidates=1, debug_candidates=False, candidate_index=0, candidate_min_prob=0.05, **kwargs):
 	quantize_cache_fn = functools.partial(maybe_quantize_kv_cache, quantized_kv_start=quantized_kv_start, kv_group_size=kv_group_size, kv_bits=kv_bits)
 
+	mirostat_tau = kwargs.get("mirostat_tau", 0.0)
+	mirostat_eta = kwargs.get("mirostat_eta", 0.1)
+	logit_noise = kwargs.get("logit_noise", 0.0)
+	dynamic_temp_min = kwargs.get("dynamic_temp_min", None)
+	dynamic_temp_max = kwargs.get("dynamic_temp_max", None)
+
+	mu = 2.0 * mirostat_tau if mirostat_tau > 0 else 0.0
+
 	def sample(logits):
+		nonlocal mu
+		
+		if logit_noise > 0.0:
+			noise = mx.random.normal(logits.shape, dtype=logits.dtype) * logit_noise
+			logits = logits + noise
+
 		if logit_bias:
 			indices = mx.array(list(logit_bias.keys()))
 			values = mx.array(list(logit_bias.values()))
 			logits[:, indices] += values
 		logprobs = logits - mx.logsumexp(logits)
+
+		cur_temperature = temperature
+		if dynamic_temp_min is not None and dynamic_temp_max is not None:
+			probs = mx.exp(logprobs)
+			entropy = -mx.sum(probs * logprobs, axis=-1).item()
+			max_entropy = mx.log(mx.array(logits.shape[-1], dtype=logits.dtype)).item()
+			entropy_ratio = min(1.0, entropy / (max_entropy * 0.5))
+			cur_temperature = dynamic_temp_max - entropy_ratio * (dynamic_temp_max - dynamic_temp_min)
+			cur_temperature = max(dynamic_temp_min, min(dynamic_temp_max, cur_temperature))
 
 		top_candidates = None
 		if debug_candidates or num_candidates > 1 or candidate_index > 0:
@@ -137,13 +166,30 @@ def generate_step(input_ids, model, pixel_values, mask, max_tokens=256, temperat
 				if debug_candidates:
 					print(f"  [FALLBACK] Candidate {candidate_index} prob={candidate_prob:.4f} < {candidate_min_prob}, selecting rank 1 instead")
 			token = top_candidates[0][selected_index:selected_index + 1]
-		elif temperature == 0:
+		elif mirostat_tau > 0:
+			probs = mx.softmax(logits, axis=-1)
+			sorted_indices = mx.argsort(probs, axis=-1)[..., ::-1]
+			sorted_probs = probs[..., sorted_indices.squeeze(0)]
+			
+			surprise = -mx.log2(sorted_probs + 1e-10)
+			mask = surprise <= mu
+			mask = mx.logical_or(mask, mx.arange(mask.shape[-1]) == 0)
+			
+			top_probs = mx.where(mask, sorted_probs, mx.zeros_like(sorted_probs))
+			sorted_token_idx = mx.random.categorical(mx.log(top_probs + 1e-10))
+			token = sorted_indices.squeeze(0)[sorted_token_idx]
+			token = token.reshape(1)
+			
+			p_chosen = sorted_probs.squeeze(0)[sorted_token_idx]
+			observed_surprise = -mx.log2(p_chosen + 1e-10).item()
+			mu = mu - mirostat_eta * (observed_surprise - mirostat_tau)
+		elif cur_temperature == 0:
 			token = mx.argmax(logits, axis=-1)
 		else:
 			if top_p > 0 and top_p < 1.0:
-				token = top_p_sampling(logits, top_p, temperature)
+				token = top_p_sampling(logits, top_p, cur_temperature)
 			else:
-				token = mx.random.categorical(logits * (1 / temperature))
+				token = mx.random.categorical(logits * (1 / cur_temperature))
 		return token, logprobs, top_candidates
 
 	if repetition_penalty and (repetition_penalty < 0 or not isinstance(repetition_penalty, float)):

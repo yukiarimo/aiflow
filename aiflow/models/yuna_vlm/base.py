@@ -8,6 +8,26 @@ from transformers.image_processing_utils import get_size_dict
 from transformers.image_utils import ChannelDimension, PILImageResampling
 
 
+class InputEmbeddingsFeatures:
+	inputs_embeds: mx.array
+	attention_mask_4d = None
+	visual_pos_masks = None
+	deepstack_visual_embeds = None
+	per_layer_inputs = None
+	cross_attention_states = None
+	cross_attention_mask = None
+	full_text_row_masked_out_mask = None
+	decoder_inputs_embeds = None
+	attention_mask = None  # For encoder-decoder models
+
+	def __init__(self, **kwargs):
+		for k, v in kwargs.items():
+			setattr(self, k, v)
+
+	def to_dict(self):
+		return self.__dict__
+
+
 class LanguageModelOutput:
 	def __init__(self, logits, hidden_states=None, cross_attention_states=None, encoder_outputs=None):
 		self.logits = logits
@@ -22,7 +42,15 @@ class BaseModelConfig:
 		return cls(**{k: v for k, v in params.items() if k in inspect.signature(cls).parameters})
 
 	def to_dict(self):
-		return {k: v for k, v in self.__dict__.items() if v is not None}
+		res = {}
+		for k, v in self.__dict__.items():
+			if v is None:
+				continue
+			if isinstance(v, BaseModelConfig):
+				res[k] = v.to_dict()
+			else:
+				res[k] = v
+		return res
 
 
 class BaseImageProcessor(ImageProcessor):

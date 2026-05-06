@@ -10,7 +10,6 @@ import mlx.nn as nn
 import numpy as np
 import soxr
 import random
-from . import qwen3_asr
 
 SAMPLE_RATE = 16000
 MODEL_REMAPPING = {"qwen3_asr": "qwen3_asr"}
@@ -59,10 +58,10 @@ def _decode_ffmpeg(input_data):
 	nchannels = int(stream.get("channels", 2))
 
 	if isinstance(input_data, bytes):
-		decode_cmd = [ffmpeg_path, "-i", "pipe:0", "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(sample_rate), "-ac", str(nchannels), "pipe:1"]
+		decode_cmd = [ffmpeg_path, "-threads", "0", "-i", "pipe:0", "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(sample_rate), "-ac", str(nchannels), "pipe:1"]
 		decode_result = subprocess.run(decode_cmd, input=input_data, capture_output=True)
 	else:
-		decode_cmd = [ffmpeg_path, "-i", str(input_data), "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(sample_rate), "-ac", str(nchannels), "pipe:1"]
+		decode_cmd = [ffmpeg_path, "-threads", "0", "-i", str(input_data), "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(sample_rate), "-ac", str(nchannels), "pipe:1"]
 		decode_result = subprocess.run(decode_cmd, capture_output=True)
 
 	if decode_result.returncode != 0:
@@ -173,6 +172,7 @@ def get_model_class(model_type, model_name, category, model_remapping):
 	elif model_type_mapped is not None:
 		model_type = model_type_mapped
 
+	from . import qwen3_asr
 	arch = qwen3_asr
 	return arch, model_type
 

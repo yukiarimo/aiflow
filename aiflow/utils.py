@@ -531,18 +531,16 @@ class Yuna_News:
 		# Paths
 		self.intel_dir = "db"
 		self.archive_dir = os.path.join(self.intel_dir, "archive")
-		self.image_dir = os.path.join(self.intel_dir, "images")
 		self.state_file = os.path.join(self.intel_dir, "user_state.json")
 
-		for d in [self.archive_dir, self.image_dir]:
-			os.makedirs(d, exist_ok=True)
+		os.makedirs(self.archive_dir, exist_ok=True)
 
 		self._ensure_state()
 		self.kagi_root = "https://news.kagi.com"
 		self.kite_url = f"{self.kagi_root}/kite.json"
 
 		# Exact RSS List
-		self.rss_feeds = ["https://www.nature.com/nature.rss", "https://www.sciencedaily.com/rss/all.xml", "https://scitechdaily.com/feed/", "https://www.universetoday.com/feed/", "https://www.nasa.gov/rss/dyn/lg_image_of_the_day.rss", "https://www.nasa.gov/rss/dyn/breaking_news.rss", "https://rss.beehiiv.com/feeds/CHXHRVUx6h.xml", "https://rss.beehiiv.com/feeds/Vy37NcFo03.xml", "https://rss.beehiiv.com/feeds/h1qs4tUVIj.xml", "https://www.technologyreview.com/feed/", "https://www.quantamagazine.org/feed/", "https://feeds.arstechnica.com/arstechnica/technology-lab", "https://feeds.arstechnica.com/arstechnica/science", "https://feeds.arstechnica.com/arstechnica/apple", ]
+		self.rss_feeds = ["https://www.nature.com/nature.rss", "https://www.sciencedaily.com/rss/all.xml", "https://scitechdaily.com/feed/", "https://www.universetoday.com/feed/", "https://www.nasa.gov/rss/dyn/lg_image_of_the_day.rss", "https://www.nasa.gov/rss/dyn/breaking_news.rss", "https://rss.beehiiv.com/feeds/CHXHRVUx6h.xml", "https://rss.beehiiv.com/feeds/Vy37NcFo03.xml", "https://rss.beehiiv.com/feeds/h1qs4tUVIj.xml", "https://www.technologyreview.com/feed/", "https://www.quantamagazine.org/feed/", "https://feeds.arstechnica.com/arstechnica/technology-lab", "https://feeds.arstechnica.com/arstechnica/science", "https://feeds.arstechnica.com/arstechnica/apple"]
 
 	def _ensure_state(self):
 		if not os.path.exists(self.state_file):
@@ -569,38 +567,13 @@ class Yuna_News:
 		self._save_state(state)
 		return True
 
-	def _cache_image(self, url):
-		"""Downloads, compresses, and caches images."""
-		if not url or not isinstance(url, str) or not url.startswith("http"):
-			return None
-		try:
-			fname = f"{hashlib.md5(url.encode()).hexdigest()}.jpg"
-			fpath = os.path.join(self.image_dir, fname)
-			if os.path.exists(fpath):
-				return fname
-
-			# Mimic browser to avoid 403
-			headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", "Referer": "https://kagi.com/", }
-			r = requests.get(url, headers=headers, timeout=5)
-			if r.status_code == 200:
-				img = Image.open(BytesIO(r.content))
-				if img.mode in ("RGBA", "P"):
-					img = img.convert("RGB")
-				if img.width > 1000:
-					ratio = 1000 / float(img.width)
-					img = img.resize((1000, int(img.height * ratio)), Image.LANCZOS)
-				img.save(fpath, "JPEG", quality=70, optimize=True)
-				return fname
-		except:
-			pass
-		return None
-
 	def sync_daily(self):
-		"""Archives all requested categories and RSS feeds."""
+		"""Archives requested categories and RSS feeds. Cleans up old unread/unbookmarked entries."""
 		stats = {"yuna": 0, "rss": 0}
+		state = self._get_state()
+		keep_ids = set(state["read"]) | set(state["bookmarks"])
 
-		# THE FULL REQUESTED LIST
-		my_cats = ["World", "USA", "Business", "Technology", "Science", "Sports", "Gaming", "3D Printing", "AI", "Apple", "Asia", "Canada", "China", "Cryptocurrency", "Cybersecurity", "Google", "Italy", "Japan", "Linux & OSS", "Microsoft", "Movies", "Music", "Professional Wrestling", "Romania", "Soccer", "South Korea", "Taiwan", "UK", ]
+		my_cats = ["World", "USA", "Business", "Technology", "Science", "Sports", "Gaming", "3D Printing", "AI", "Apple", "Asia", "Canada", "China", "Cryptocurrency", "Cybersecurity", "Google", "Italy", "Japan", "Linux & OSS", "Microsoft", "Movies", "Music", "Professional Wrestling", "Romania", "Soccer", "South Korea", "Taiwan", "UK"]
 
 		try:
 			# 1. Yuna Network (Kagi)
@@ -610,7 +583,7 @@ class Yuna_News:
 					continue
 
 				data = requests.get(f"{self.kagi_root}/{cat['file']}").json()
-				f_name = (f"{cat['name'].lower().replace(' ', '_').replace('&', 'and')}.json")
+				f_name = f"{cat['name'].lower().replace(' ', '_').replace('&', 'and')}.json"
 				f_path = os.path.join(self.archive_dir, f_name)
 
 				existing = []
@@ -618,59 +591,49 @@ class Yuna_News:
 					with open(f_path, "r") as f:
 						existing = json.load(f)
 
-				e_ids = {c.get("_id") for c in existing}
-				count_added = 0
+				existing_map = {x["_id"]: x for x in existing}
+				fresh_ids = set()
 
 				for c in data.get("clusters", []):
 					sid = f"kagi_{c.get('timestamp')}_{hashlib.md5(c['title'].encode()).hexdigest()[:8]}"
-					if sid in e_ids:
-						continue
+					fresh_ids.add(sid)
 
-					# Safe Image Extraction
-					img_u = None
-					if c.get("primary_image"):
-						if isinstance(c["primary_image"], dict):
-							img_u = c["primary_image"].get("url")
-						else:
-							img_u = c["primary_image"]
+					img_u = c.get("primary_image", "")
+					if isinstance(img_u, dict):
+						img_u = img_u.get("url", "")
 
-					entry = {"_id": sid, "_type": "yuna", "title": c.get("title"), "short_summary": c.get("short_summary"), "timestamp": c.get("timestamp"), "category": c.get("category"), "talking_points": c.get("talking_points", []), "scientific_significance": c.get("scientific_significance", []), "perspectives": c.get("perspectives", []), "unique_domains": c.get("unique_domains", 1), "primary_image": c.get("primary_image"), "_local_img": self._cache_image(img_u), }
-					existing.append(entry)
-					count_added += 1
+					if sid not in existing_map:
+						existing_map[sid] = {"_id": sid, "_type": "yuna", "title": c.get("title"), "short_summary": c.get("short_summary"), "timestamp": c.get("timestamp"), "category": c.get("category"), "talking_points": c.get("talking_points", []), "scientific_significance": c.get("scientific_significance", []), "perspectives": c.get("perspectives", []), "unique_domains": c.get("unique_domains", 1), "did_you_know": c.get("did_you_know", ""), "historical_background": c.get("historical_background", ""), "technical_details": c.get("technical_details", []), "timeline": c.get("timeline", []), "image_url": img_u, "url": f"https://kagi.com/news/search?q={quote(c.get('title',''))}"}
+						stats["yuna"] += 1
 
-				if count_added > 0:
-					existing.sort(key=lambda x: (x.get("timestamp") or 0), reverse=True)
-					with open(f_path, "w") as f:
-						json.dump(existing, f, indent=2)
-					stats["yuna"] += count_added
+				# Clean up: Only keep items that are either fresh OR bookmarked/read
+				final_yuna = [item for sid, item in existing_map.items() if sid in fresh_ids or sid in keep_ids]
+				final_yuna.sort(key=lambda x: (x.get("timestamp") or 0), reverse=True)
 
-			# 2. RSS Sync (Aggressive)
+				with open(f_path, "w") as f:
+					json.dump(final_yuna, f, indent=2)
+
+			# 2. RSS Sync (Personal Stream)
 			rss_path = os.path.join(self.archive_dir, "personal_stream.json")
-			existing_rss = []
+			existing_rss_map = {}
 			if os.path.exists(rss_path):
 				with open(rss_path, "r") as f:
-					existing_rss = json.load(f)
+					existing_rss_map = {x["_id"]: x for x in json.load(f)}
 
-			r_ids = {item["_id"] for item in existing_rss}
-
-			# Common Namespaces
-			ns = {"media": "http://search.yahoo.com/mrss/", "content": "http://purl.org/rss/1.0/modules/content/", "atom": "http://www.w3.org/2005/Atom", }
+			fresh_rss_ids = set()
+			ns = {"media": "http://search.yahoo.com/mrss/", "content": "http://purl.org/rss/1.0/modules/content/", "atom": "http://www.w3.org/2005/Atom"}
 
 			for url in self.rss_feeds:
 				try:
 					r = requests.get(url, timeout=10)
-					# Strip null bytes that break parsing
 					clean_content = r.text.replace("\x00", "")
 					root = ET.fromstring(clean_content.encode("utf-8"))
 
 					items = root.findall(".//item") or root.findall(".//atom:entry", ns)
 					source = (urlparse(url).netloc.replace("www.", "").split(".")[0].upper())
 
-					for i in items[:10]:
-						# Title
+					for i in items[:15]:
 						title = (i.findtext("title") or i.findtext("{http://www.w3.org/2005/Atom}title", namespaces=ns) or "Untitled").strip()
-
-						# Link
 						link = i.findtext("link")
 						if not link:
 							link_node = i.find("atom:link", ns)
@@ -680,107 +643,84 @@ class Yuna_News:
 							continue
 
 						sid = f"rss_{hashlib.md5(link.encode()).hexdigest()}"
-						if sid in r_ids:
-							continue
+						fresh_rss_ids.add(sid)
 
-						# Description / Content (Aggressive)
-						desc = i.findtext("{http://purl.org/rss/1.0/modules/content/}encoded", namespaces=ns)
-						if not desc:
-							desc = i.findtext("description")
-						if not desc:
-							desc = i.findtext("atom:summary", namespaces=ns)
-						if not desc:
-							desc = ""
+						if sid not in existing_rss_map:
+							desc = i.findtext("{http://purl.org/rss/1.0/modules/content/}encoded", namespaces=ns) or i.findtext("description") or i.findtext("atom:summary", namespaces=ns) or ""
+							snippet = (re.sub(r"<[^>]+>", "", desc).replace("\n", " ").strip()[:350] + "...")
 
-						# Strip HTML for snippet
-						snippet = (re.sub(r"<[^>]+>", "", desc).replace("\n", " ").strip()[:350] + "...")
+							thumb = None
+							mc = i.find("media:content", ns)
+							if mc is not None: thumb = mc.get("url")
+							if not thumb:
+								enc = i.find("enclosure")
+								if enc is not None: thumb = enc.get("url")
+							if not thumb:
+								img_match = re.search(r'<img.*?src=["\'](.*?)["\']', desc)
+								if img_match: thumb = img_match.group(1)
 
-						# Image Hunting
-						thumb = None
-						mc = i.find("media:content", ns)
-						if mc is not None:
-							thumb = mc.get("url")
-						if not thumb:
-							enc = i.find("enclosure")
-							if enc is not None:
-								thumb = enc.get("url")
-						if not thumb:
-							# Regex hunt in HTML content
-							img_match = re.search(r'<img.*?src=["\'](.*?)["\']', desc)
-							if img_match:
-								thumb = img_match.group(1)
-
-						pubd = i.findtext("pubDate") or i.findtext("dc:date", namespaces=ns)
-						if not pubd:
-							pubd = i.findtext("{http://www.w3.org/2005/Atom}updated") or i.findtext("{http://www.w3.org/2005/Atom}published")
-
-						stamp = time.time()
-						if pubd:
-							try:
-								dt = email.utils.parsedate_to_datetime(pubd)
-								if dt is not None:
-									stamp = dt.timestamp()
-							except:
+							pubd = i.findtext("pubDate") or i.findtext("dc:date", namespaces=ns) or i.findtext("{http://www.w3.org/2005/Atom}updated")
+							stamp = time.time()
+							if pubd:
 								try:
-									import datetime
-									stamp = datetime.datetime.fromisoformat(pubd.replace("Z", "+00:00")).timestamp()
+									dt = email.utils.parsedate_to_datetime(pubd)
+									if dt is not None: stamp = dt.timestamp()
 								except:
 									pass
 
-						existing_rss.append({"_id": sid, "_type": "rss", "source": source, "title": title, "url": link, "snippet": snippet, "timestamp": stamp, "_local_img": self._cache_image(thumb), })
-						stats["rss"] += 1
+							existing_rss_map[sid] = {"_id": sid, "_type": "rss", "source": source, "title": title, "url": link, "snippet": snippet, "timestamp": stamp, "image_url": thumb}
+							stats["rss"] += 1
 				except Exception as e:
 					print(f"Skipping RSS {url}: {e}")
 					continue
 
-			existing_rss.sort(key=lambda x: (x.get("timestamp") or 0), reverse=True)
+			# Clean up old RSS
+			final_rss = [item for sid, item in existing_rss_map.items() if sid in fresh_rss_ids or sid in keep_ids]
+			final_rss.sort(key=lambda x: (x.get("timestamp") or 0), reverse=True)
+
 			with open(rss_path, "w") as f:
-				json.dump(existing_rss[:1000], f, indent=2)
+				json.dump(final_rss, f, indent=2)
 
 			return {"status": "success", "stats": stats}
 		except Exception as e:
 			return {"error": str(e)}
 
-	def get_feed(self, mode="yuna", cat=None, search=None, day=None):
-		"""Loads from local archive files."""
+	def get_feed(self, q=None, cat=None, yuna_only=False):
+		"""Returns ONLY UNREAD unified items, filtered by category and feed source."""
 		state = self._get_state()
 		results = []
 
-		# Select files
-		if mode == "rss":
-			files = ["personal_stream.json"]
-		elif mode == "all":
-			files = [f for f in os.listdir(self.archive_dir) if f.endswith(".json")]
-		else:
-			files = [f for f in os.listdir(self.archive_dir) if f.endswith(".json") and f != "personal_stream.json"]
+		files = [f for f in os.listdir(self.archive_dir) if f.endswith(".json")]
+		clean_cat = cat.lower().replace(" ", "_").replace("&", "and") if cat else None
 
 		for f in files:
-			# Category match (e.g. "linux_oss.json")
-			if cat:
-				clean_cat = cat.lower().replace(" ", "_").replace("&", "and")
-				if clean_cat not in f:
-					continue
+			is_rss = (f == "personal_stream.json")
 
-			p = os.path.join(self.archive_dir, f)
-			if not os.path.exists(p):
+			if yuna_only and is_rss:
+				continue
+
+			# Filter Kagi files by name
+			if clean_cat and not is_rss and clean_cat not in f:
 				continue
 
 			try:
-				with open(p, "r") as j:
+				with open(os.path.join(self.archive_dir, f), "r") as j:
 					for s in json.load(j):
-						# Search Filter
+						if s["_id"] in state["read"]:
+							continue  # Hide already read items!
+
 						content = (str(s.get("title", "")) + " " + str(s.get("short_summary", "")) + " " + str(s.get("snippet", ""))).lower()
-						if search and search.lower() not in content:
+
+						# Search query filter
+						if q and q.lower() not in content:
 							continue
 
-						# Date Filter
-						if day == "today":
-							ts = s.get("timestamp") or 0
-							if (datetime.datetime.fromtimestamp(ts).date() != datetime.date.today()):
+						# Intelligent text filter for RSS to mimic categories
+						if clean_cat and is_rss:
+							cat_keyword = cat.lower().split()[0]
+							if cat_keyword not in content and cat_keyword not in str(s.get("source", "")).lower():
 								continue
 
-						# State Injection
-						s["_read"] = s["_id"] in state["read"]
 						s["_bookmarked"] = s["_id"] in state["bookmarks"]
 						results.append(s)
 			except:
@@ -791,13 +731,24 @@ class Yuna_News:
 
 	def get_saved(self):
 		state = self._get_state()
-		all_data = self.get_feed(mode="all")
-		return {"bookmarks": [s for s in all_data if s["_bookmarked"]], "history": [s for s in all_data if s["_read"]], }
+		all_data = []
+		files = [f for f in os.listdir(self.archive_dir) if f.endswith(".json")]
+		for f in files:
+			try:
+				with open(os.path.join(self.archive_dir, f), "r") as j:
+					all_data.extend(json.load(j))
+			except:
+				pass
+
+		for s in all_data:
+			s["_read"] = s["_id"] in state["read"]
+			s["_bookmarked"] = s["_id"] in state["bookmarks"]
+
+		return {"bookmarks": [s for s in all_data if s["_bookmarked"]], "history": [s for s in all_data if s["_read"]]}
 
 	def get_world_news(self, query):
 		key = os.environ.get("API_KAGI_KEY")
-		if not key:
-			return []
+		if not key: return []
 		try:
 			headers = {"Authorization": f"Bot {key}"}
 			r = requests.get("https://kagi.com/api/v0/enrich/news", params={"q": query}, headers=headers, timeout=10)
@@ -820,24 +771,21 @@ class Yuna_Calendar:
 		if not end_date:
 			end_date = start_date + datetime.timedelta(days=1)
 
-		try:
-			client = caldav.DAVClient(url=self.url, username=self.user, password=self.password)
-			principal = client.principal()
-			results = []
-			for cal in principal.calendars():
-				events = cal.search(start=start_date, end=end_date, event=True, expand=True)
-				for e in events:
-					ical = e.icalendar_component
-					start_dt = ical.get("DTSTART").dt
-					if isinstance(start_dt, datetime.datetime):
-						start_dt = start_dt.astimezone(self.tz)
-					elif isinstance(start_dt, datetime.date):
-						start_dt = self.tz.localize(datetime.datetime(start_dt.year, start_dt.month, start_dt.day))
-					results.append({"title": str(ical.get("SUMMARY")), "start": start_dt.isoformat(), "location": str(ical.get("LOCATION", "")), "calendar": str(cal.url).split("/")[-2], })
-			results.sort(key=lambda x: x["start"])
-			return results
-		except Exception as e:
-			return {"error": str(e)}
+		client = caldav.DAVClient(url=self.url, username=self.user, password=self.password)
+		principal = client.principal()
+		results = []
+		for cal in principal.calendars():
+			events = cal.search(start=start_date, end=end_date, event=True, expand=True)
+			for e in events:
+				ical = e.icalendar_component
+				start_dt = ical.get("DTSTART").dt
+				if isinstance(start_dt, datetime.datetime):
+					start_dt = start_dt.astimezone(self.tz)
+				elif isinstance(start_dt, datetime.date):
+					start_dt = self.tz.localize(datetime.datetime(start_dt.year, start_dt.month, start_dt.day))
+				results.append({"title": str(ical.get("SUMMARY")), "start": start_dt.isoformat(), "location": str(ical.get("LOCATION", "")), "calendar": str(cal.url).split("/")[-2], })
+		results.sort(key=lambda x: x["start"])
+		return results
 
 
 # YUNA EMAIL
@@ -855,90 +803,81 @@ class Yuna_Email:
 		return mail
 
 	def get_emails(self, folder="INBOX", limit=20, unread_only=False):
-		try:
-			mail = self._connect_imap()
-			mail.select(folder)
+		mail = self._connect_imap()
+		mail.select(folder)
 
-			criterion = "UNSEEN" if unread_only else "ALL"
-			_, data = mail.search(None, criterion)
+		criterion = "UNSEEN" if unread_only else "ALL"
+		_, data = mail.search(None, criterion)
 
-			if not data[0]:
-				return []
+		if not data[0]:
+			return []
 
-			ids = data[0].split()
-			latest_ids = ids[-limit:]  # Get last N
+		ids = data[0].split()
+		latest_ids = ids[-limit:]  # Get last N
 
-			results = []
-			for eid in reversed(latest_ids):
-				_, msg_data = mail.fetch(eid, "(RFC822)")
-				raw = email.message_from_bytes(msg_data[0][1])
+		results = []
+		for eid in reversed(latest_ids):
+			_, msg_data = mail.fetch(eid, "(RFC822)")
+			raw = email.message_from_bytes(msg_data[0][1])
 
-				# Decode Subject
-				subject, encoding = decode_header(raw["Subject"])[0]
-				if isinstance(subject, bytes):
-					subject = subject.decode(encoding or "utf-8")
+			# Decode Subject
+			subject, encoding = decode_header(raw["Subject"])[0]
+			if isinstance(subject, bytes):
+				subject = subject.decode(encoding or "utf-8")
 
-				# Get Body
-				body = ""
-				if raw.is_multipart():
-					for part in raw.walk():
-						if part.get_content_type() == "text/plain":
-							body = part.get_payload(decode=True).decode(errors="ignore")
-							break
-				else:
-					body = raw.get_payload(decode=True).decode(errors="ignore")
+			# Get Body
+			body = ""
+			if raw.is_multipart():
+				for part in raw.walk():
+					if part.get_content_type() == "text/plain":
+						body = part.get_payload(decode=True).decode(errors="ignore")
+						break
+			else:
+				body = raw.get_payload(decode=True).decode(errors="ignore")
 
-				results.append({"id": eid.decode(), "msg_id": raw.get("Message-ID"), "from": raw.get("From"), "subject": subject, "date": raw.get("Date"), "body_preview": body[:200], })
+			results.append({"id": eid.decode(), "msg_id": raw.get("Message-ID"), "from": raw.get("From"), "subject": subject, "date": raw.get("Date"), "body_preview": body[:200], })
 
-			mail.close()
-			mail.logout()
-			return results
-		except Exception as e:
-			return {"error": str(e)}
+		mail.close()
+		mail.logout()
+		return results
 
 	def send_email(self, to, subject, body, attachment_path=None, reply_to_id=None):
-		try:
-			msg = MIMEMultipart()
-			msg["From"] = self.email
-			msg["To"] = to or self.user_email
-			msg["Subject"] = subject
+		msg = MIMEMultipart()
+		msg["From"] = self.email
+		msg["To"] = to or self.user_email
+		msg["Subject"] = subject
 
-			if reply_to_id:
-				msg["In-Reply-To"] = reply_to_id
-				msg["References"] = reply_to_id
+		if reply_to_id:
+			msg["In-Reply-To"] = reply_to_id
+			msg["References"] = reply_to_id
 
-			msg.attach(MIMEText(body, "plain"))
+		msg.attach(MIMEText(body, "plain"))
 
-			if attachment_path:
-				filename = os.path.basename(attachment_path)
-				with open(attachment_path, "rb") as f:
-					part = MIMEBase("application", "octet-stream")
-					part.set_payload(f.read())
-				encoders.encode_base64(part)
-				part.add_header("Content-Disposition", f"attachment; filename= {filename}")
-				msg.attach(part)
+		if attachment_path:
+			filename = os.path.basename(attachment_path)
+			with open(attachment_path, "rb") as f:
+				part = MIMEBase("application", "octet-stream")
+				part.set_payload(f.read())
+			encoders.encode_base64(part)
+			part.add_header("Content-Disposition", f"attachment; filename= {filename}")
+			msg.attach(part)
 
-			server = smtplib.SMTP_SSL(self.smtp_server, 465)
-			server.login(self.email, self.password)
-			server.send_message(msg)
-			server.quit()
-			return {"status": "sent"}
-		except Exception as e:
-			return {"error": str(e)}
+		server = smtplib.SMTP_SSL(self.smtp_server, 465)
+		server.login(self.email, self.password)
+		server.send_message(msg)
+		server.quit()
+		return {"status": "sent"}
 
 	def delete_email(self, email_id):
-		try:
-			mail = self._connect_imap()
-			mail.select("INBOX")
-			# Mark as deleted
-			mail.store(email_id, "+FLAGS", "\\Deleted")
-			# Expunge (Permanently remove)
-			mail.expunge()
-			mail.close()
-			mail.logout()
-			return {"status": "deleted"}
-		except Exception as e:
-			return {"error": str(e)}
+		mail = self._connect_imap()
+		mail.select("INBOX")
+		# Mark as deleted
+		mail.store(email_id, "+FLAGS", "\\Deleted")
+		# Expunge (Permanently remove)
+		mail.expunge()
+		mail.close()
+		mail.logout()
+		return {"status": "deleted"}
 
 	def forward_email(self, email_id, to_address):
 		# Fetch original, create new message with FW: subject and original body
@@ -986,38 +925,6 @@ class Yuna_Weather:
 		w_resp = requests.get(w_url, headers={"Authorization": f"Bearer {w_token}"})
 
 		return w_resp.json()
-
-
-# YUNA FILESYSTEM
-class Yuna_Filesystem:
-	def __init__(self):
-		# FIX: Point directly to the Yuna project folder
-		self.root_path = os.environ.get("FOLDER_DOWNLOADS_YUNA") or os.getcwd()
-
-	def list_files(self, subpath=""):
-		# Cleanup path joining to prevent "Path not found"
-		subpath = subpath.strip("/")
-		target_dir = os.path.abspath(os.path.join(self.root_path, subpath))
-
-		# Security: stay within root
-		if not target_dir.startswith(os.path.abspath(self.root_path)):
-			return {"error": "Access Denied"}
-
-		if not os.path.exists(target_dir):
-			# Fallback to root if subpath fails
-			target_dir = os.path.abspath(self.root_path)
-
-		items = []
-		try:
-			for entry in os.scandir(target_dir):
-				stats = entry.stat()
-				# Simplified paths for the frontend
-				rel_path = os.path.relpath(entry.path, self.root_path)
-				items.append({"name": entry.name, "type": "folder" if entry.is_dir() else "file", "size": stats.st_size, "path": rel_path, })
-		except Exception as e:
-			return {"error": str(e)}
-
-		return sorted(items, key=lambda x: (x["type"] != "folder", x["name"].lower()))
 
 
 # LOLI MANAGER

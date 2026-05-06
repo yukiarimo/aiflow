@@ -17,7 +17,7 @@ from .base import BaseImageProcessor
 from .yuna_tokenizer import load_tokenizer
 from .lora import apply_lora_layers
 
-MODEL_REMAPPING = {"qwen3_vl": "qwen3_vl", "qwen3_5": "qwen3_5"}
+MODEL_REMAPPING = {"qwen3_vl": "qwen3_vl"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 

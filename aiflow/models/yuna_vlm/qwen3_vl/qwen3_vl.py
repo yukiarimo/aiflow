@@ -1,6 +1,7 @@
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+import re
 from .language import LanguageModel
 from .vision import VisionModel
 
@@ -77,11 +78,10 @@ class Model(nn.Module):
 	def sanitize(self, weights):
 		sanitized_weights = {}
 		for key, value in weights.items():
-			if "model" in key:
-				if "model.language_model" in key:
-					key = key.replace("model.language_model", "language_model.model")
-				elif "model.visual" in key:
-					key = key.replace("model.visual", "vision_tower")
+			if "visual" in key:
+				key = re.sub(r'^(?:model\.)?(?:language_model\.)*visual', 'vision_tower', key)
+			elif "model.language_model" in key:
+				key = re.sub(r'model(?:\.language_model)+', 'language_model.model', key)
 			elif "lm_head" in key:
 				key = key.replace("lm_head", "language_model.lm_head")
 

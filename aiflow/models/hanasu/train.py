@@ -325,11 +325,11 @@ def run(rank, n_gpus, hps):
 	else:
 		optim_dur_disc = None
 
-	net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=False)
-	net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=False)
+	net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
+	net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
 
 	if net_dur_disc is not None:
-		net_dur_disc = DDP(net_dur_disc, device_ids=[rank], find_unused_parameters=False)
+		net_dur_disc = DDP(net_dur_disc, device_ids=[rank], find_unused_parameters=True)
 
 	epoch_str = 1
 	global_step = 0
@@ -526,7 +526,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
 			generator.train()
 			return
 
-		y_hat, attn, mask, *_ = generator.module.infer(x, x_lengths, speakers, max_len=1000)
+		y_hat, attn, mask, *_ = generator.module.infer(x, x_lengths, speakers)
 		y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
 		mel = spec
 		y_hat_mel = utils.mel_spectrogram_torch(y_hat.squeeze(1).float(), hps.data.filter_length, hps.data.n_mel_channels, hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length, hps.data.mel_fmin, hps.data.mel_fmax)

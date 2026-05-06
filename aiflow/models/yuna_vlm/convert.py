@@ -66,7 +66,7 @@ def convert(local_path, mlx_path="mlx_model", quantize=False, q_group_size=64, q
 	print("[INFO] Loading local model...")
 	model_path = get_model_path(local_path)
 	model, processor = load(model_path, lazy=True)
-	config = model.config.__dict__
+	config = model.config.to_dict()
 
 	def base_quant_predicate(path, module):
 		if skip_multimodal_module(path):

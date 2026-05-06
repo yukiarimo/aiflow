@@ -225,19 +225,19 @@ class AGIWorker:
 		return self.audio_model.generate(audio_file).text.strip()
 
 	def speak_text(self, text, output_filename=None):
-		output_filename = f"static/audio/{uuid.uuid4()}.wav"
+		output_filename = f"static/audio/{uuid.uuid4()}.m4a"
 		mode = self.config["server"]["yuna_speech_mode"]
 
 		if mode == "siri":
-			os.system(f'say -o "static/audio/temp.aiff" {repr(text)}')
-			subprocess.run(["ffmpeg", "-y", "-i", "static/audio/temp.aiff", output_filename], check=True, capture_output=True)
+			subprocess.run(["say", "-o", "static/audio/temp.aiff", text], check=True)
+			subprocess.run(["ffmpeg", "-y", "-v", "quiet", "-threads", "0", "-i", "static/audio/temp.aiff", "-acodec", "alac", output_filename], check=True)
 			os.remove("static/audio/temp.aiff")
 			return output_filename, None
 
 		elif mode == "siri-pv":
 			voice_model = self.config["server"]["yuna_speech_model"][0]
-			os.system(f'say -v {voice_model} -o "static/audio/temp.aiff" {repr(text)}')
-			subprocess.run(["ffmpeg", "-y", "-i", "static/audio/temp.aiff", output_filename], check=True, capture_output=True)
+			subprocess.run(["say", "-v", voice_model, "-o", "static/audio/temp.aiff", text], check=True)
+			subprocess.run(["ffmpeg", "-y", "-v", "quiet", "-threads", "0", "-i", "static/audio/temp.aiff", "-acodec", "alac", output_filename], check=True)
 			os.remove("static/audio/temp.aiff")
 			return output_filename, None
 
@@ -245,10 +245,11 @@ class AGIWorker:
 			if not hasattr(self, "voice_model") or self.voice_model is None:
 				self.load_voice_model()
 			result = inference_hanasu(model=self.voice_model, text=text, device="mps", stream=False)
-			sf.write(output_filename, result, 48000)
+			temp_wav = f"static/audio/temp_{uuid.uuid4()}.wav"
+			sf.write(temp_wav, result, 48000)
+			subprocess.run(["ffmpeg", "-y", "-v", "quiet", "-threads", "0", "-i", temp_wav, "-acodec", "alac", output_filename], check=True)
+			os.remove(temp_wav)
 			return output_filename, None
-
-		return None, None
 
 	def start(self):
 		self.load_text_model()

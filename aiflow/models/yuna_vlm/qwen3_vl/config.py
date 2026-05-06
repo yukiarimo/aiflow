@@ -27,7 +27,7 @@ class VisionConfig(BaseModelConfig):
 
 
 class TextConfig(BaseModelConfig):
-	def __init__(self, model_type, num_hidden_layers, hidden_size, intermediate_size, num_attention_heads, rms_norm_eps, vocab_size, num_key_value_heads, head_dim, rope_theta, max_position_embeddings, norm_topk_prob=True, rope_scaling=None, tie_word_embeddings=False, attention_bias=False, hidden_act="silu"):
+	def __init__(self, model_type, num_hidden_layers, hidden_size, intermediate_size, num_attention_heads, rms_norm_eps, vocab_size, num_key_value_heads, head_dim, rope_theta=1000000.0, max_position_embeddings=32768, norm_topk_prob=True, rope_scaling=None, tie_word_embeddings=False, attention_bias=False, hidden_act="silu"):
 		self.model_type = model_type
 		self.num_hidden_layers = num_hidden_layers
 		self.hidden_size = hidden_size

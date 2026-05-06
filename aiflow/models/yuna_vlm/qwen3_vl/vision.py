@@ -145,7 +145,7 @@ class VisionModel(nn.Module):
 		super().__init__()
 		self.config = config
 		self.model_type = config.model_type
-		if self.model_type != "qwen3_vl":
+		if self.model_type not in ["qwen3_vl"]:
 			raise ValueError(f"Unsupported model type: {self.model_type}")
 		self.spatial_merge_size = config.spatial_merge_size
 		self.patch_embed = PatchEmbed(patch_size=config.patch_size, temporal_patch_size=config.temporal_patch_size, in_channels=config.in_channels, hidden_size=config.hidden_size)

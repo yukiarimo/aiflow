@@ -11,6 +11,10 @@ AiFlow is a lightweight Python package for inferencing, evaluating, and training
 	- [Table of Contents](#table-of-contents)
 	- [Installation](#installation)
 	- [Usage](#usage)
+		- [1. Hanasu TTS](#1-hanasu-tts)
+		- [2. Hifi Gan (Vocoder)](#2-hifi-gan-vocoder)
+		- [3. Yuna Audio (ASR)](#3-yuna-audio-asr)
+		- [4. Yuna VLM](#4-yuna-vlm)
 	- [License](#license)
 	- [Contact](#contact)
 
@@ -103,7 +107,7 @@ Yuna Audio is our Automatic Speech Recognition (ASR) model based on Qwen3. You c
 from aiflow.models.yuna_audio.qwen3_asr import Model
 
 # 1. Load the configuration and instantiate the ASR model
-# config = ... 
+# config = ...
 # asr_model = Model(config)
 # asr_model.load_weights("path/to/yuna_audio_weights")
 
@@ -123,7 +127,7 @@ Yuna VLM is our Vision-Language Model. It allows processing either images or aud
 from aiflow.models.yuna_vlm.generate import generate
 
 # 1. Load your Yuna VLM model and processor
-# model, processor = ... 
+# model, processor = ...
 
 # 2. Generate text from an image with a question/prompt
 # result = generate(
