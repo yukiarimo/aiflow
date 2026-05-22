@@ -21,20 +21,31 @@ def save_prompt_cache(cache, path, input_ids):
 	metadata = {"input_ids": input_ids, "layers": len(cache), "offsets": []}
 
 	for i, layer_cache in enumerate(cache):
-		if isinstance(layer_cache, (KVCache, SimpleKVCache, StaticKVCache, RotatingKVCache)):
+		# Fallback checking handles dynamic class types successfully
+		if hasattr(layer_cache, "keys") and hasattr(layer_cache, "values"):
 			if layer_cache.keys is not None and layer_cache.values is not None:
 				tensors[f"layer_{i}_keys"] = layer_cache.keys
 				tensors[f"layer_{i}_values"] = layer_cache.values
 				metadata["offsets"].append(layer_cache.offset)
 			else:
 				metadata["offsets"].append(0)
+		else:
+			metadata["offsets"].append(0)
 
 	base, _ = os.path.splitext(path)
 	if not path.endswith(".safetensors"):
 		path = path + ".safetensors"
 
-	mx.save_safetensors(path, tensors)
+	# SafeTensors mathematically requires metadata values to be strictly formatted as STRINGS.
+	safe_metadata = {str(k): json.dumps(v) for k, v in metadata.items()}
 
+	try:
+		mx.save_safetensors(path, tensors, metadata=safe_metadata)
+	except TypeError:
+		# Fallback for MLX API bindings that don't accept metadata kwargs
+		mx.save_safetensors(path, tensors)
+
+	# Keep the companion json payload intact for easy python loading
 	with open(base + ".json", "w") as f:
 		json.dump(metadata, f)
 

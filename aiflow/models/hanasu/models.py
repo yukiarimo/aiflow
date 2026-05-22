@@ -1655,7 +1655,6 @@ def export_model(config_path, model_path, output_path, device="cpu"):
 	for buffer in model_g.buffers():
 		buffer.data = buffer.data.float()
 
-	print("Model loaded.")
 	model_g.forward = model_g.infer
 
 	# Prepare dummy inputs for tracing
@@ -1665,10 +1664,8 @@ def export_model(config_path, model_path, output_path, device="cpu"):
 	output_file = Path(output_path)
 	output_file.parent.mkdir(parents=True, exist_ok=True)
 	temp_onnx_path = output_file.with_suffix(".onnx")
-
-	print(f"Exporting to ONNX at {temp_onnx_path}...")
-	torch.onnx.export(model=model_g, args=(sequences, sequence_lengths), f=str(temp_onnx_path), verbose=False, opset_version=17, input_names=["x", "x_lengths"], output_names=["output", "attn", "y_mask", "internals"], dynamic_axes={"x": {0: "batch_size", 1: "phonemes"}, "x_lengths": {0: "batch_size"}, "output": {0: "batch_size", 2: "time"}, }, kwargs={"sid": sid_input, "noise_scale": 0.667, "length_scale": 1.0, "noise_scale_w": 0.8, })
-	print("Initial ONNX export complete.")
+	torch.onnx.export(model=model_g, args=(sequences, sequence_lengths), f=str(temp_onnx_path), verbose=False, opset_version=17, input_names=["x", "x_lengths"], output_names=["output", "attn", "y_mask", "internals"], dynamic_axes={"x": {0: "batch_size", 1: "phonemes"}, "x_lengths": {0: "batch_size"}, "output": {0: "batch_size", 2: "time"}, }, kwargs={"sid": sid_input, "noise_scale": 0.4, "length_scale": 1.0, "noise_scale_w": 0.4, })
+	print("ONNX export complete.")
 
 
 def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, length_scale=1.0, min_period_duration=24.0, device="mps", stream=False, output_file=None, language="en-us", language_map=None, language_speakers=None):
@@ -1680,7 +1677,6 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 
 	# Split text by language
 	processed_chunks = split_and_process_text(text, language=language, max_length=300, combine=True, language_map=language_map)
-	print(f"Split into {len(processed_chunks)} multilingual chunks")
 
 	# Non-Streaming
 	if not stream:
@@ -1688,7 +1684,6 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 
 		sf_file = None
 		if output_file:
-			print(f"Streaming audio directly to {output_file}...")
 			sf_file = sf.SoundFile(output_file, mode='w', samplerate=48000, channels=1)
 
 		for i, chunk_obj in enumerate(tqdm(processed_chunks, desc="Generating audio", unit="chunk")):

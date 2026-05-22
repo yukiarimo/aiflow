@@ -7,6 +7,8 @@ import torch
 from aiflow.utils import get_config
 from pydub import AudioSegment
 import soundfile as sf
+import io
+import base64
 
 
 def load_conditional_imports(config):
@@ -19,9 +21,12 @@ def load_conditional_imports(config):
 
 	if config["server"]["yuna_audio_mode"] == "yuna_audio":
 		from aiflow.models.yuna_audio.utils import load as load_yuna_audio_model
+		from aiflow.models.yuna_audio.utils import audio_read, resample_audio
 		from mlx import core as mx
 		globals()["load_yuna_audio_model"] = load_yuna_audio_model
 		globals()["mx"] = mx
+		globals()["audio_read"] = audio_read
+		globals()["resample_audio"] = resample_audio
 
 	if config["server"]["yuna_speech_mode"] == "hanasu":
 		from aiflow.models.hanasu.models import inference as inference_hanasu
@@ -40,14 +45,14 @@ class AGIWorker:
 		self.audio_model = None
 		load_conditional_imports(self.config)
 
-	def get_history_text(self, chat_history, text, useHistory, yunaConfig, image_paths, append_current_user=True, continue_from=None):
+	def get_history_text(self, chat_history, text, useHistory, yunaConfig, image_paths, mode="chat"):
 		all_image_paths = []
 
 		if useHistory is False:
-			final = text
-		history_str = ""
+			return text or "", all_image_paths
 
-		if useHistory and chat_history:
+		history_str = ""
+		if chat_history:
 			for m in chat_history:
 				role = "yuki" if m["name"].lower() == "yuki" else "yuna"
 				message_content = m.get("text", "")
@@ -56,17 +61,17 @@ class AGIWorker:
 				if m.get("images") and isinstance(m.get("images"), list):
 					for attachment in m["images"]:
 						if isinstance(attachment, str):
-							if os.path.exists(attachment.lstrip("/")):
-								all_image_paths.append(attachment.lstrip("/"))
+							if attachment.startswith("data:image/") or os.path.exists(attachment.lstrip("/")):
+								all_image_paths.append(attachment if attachment.startswith("data:image/") else attachment.lstrip("/"))
 								image_count += 1
 						elif isinstance(attachment, dict):
 							if attachment.get("type") == "text" and attachment.get("content"):
 								if "<data>" not in str(message_content):
 									message_content = (f"{message_content}<data>{attachment['content']}</data>")
-							elif attachment.get("type") == "image" and attachment.get("path"):
-								image_path = attachment["path"].lstrip("/")
-								if os.path.exists(image_path):
-									all_image_paths.append(image_path)
+							elif attachment.get("type") == "image":
+								img_val = attachment.get("path") or attachment.get("content")
+								if img_val and (img_val.startswith("data:image/") or os.path.exists(img_val.lstrip("/"))):
+									all_image_paths.append(img_val if img_val.startswith("data:image/") else img_val.lstrip("/"))
 									image_count += 1
 
 				if role == "yuki":
@@ -74,18 +79,32 @@ class AGIWorker:
 				else:
 					history_str += f"<{role}>{message_content}</{role}>\n"
 
-		if append_current_user and useHistory:
-			current_prompt = text or ""
+		if mode == "extend":
+			# Fix extending: cleanly strip the closing tag from Yuna's last message
+			if history_str.strip().endswith("</yuna>"):
+				history_str = history_str.strip()[:-7]
+			return history_str, all_image_paths
+
+		elif mode == "second_yuna":
+			# Fix consecutive message: history is enclosed, just force new Yuna opening tag
+			return f"{history_str.strip()}\n<yuna>", all_image_paths
+
+		# Prevent duplicate <yuki> tags if frontend already pushed the prompt into chat_history
+		current_prompt = text or ""
+		already_appended = False
+
+		if chat_history and len(chat_history) > 0:
+			last_msg = chat_history[-1]
+			l_role = "yuki" if last_msg.get("name", "").lower() == "yuki" else "yuna"
+			if l_role == "yuki" and last_msg.get("text", "") == current_prompt:
+				already_appended = True
+
+		if already_appended:
+			final = f"{history_str}<yuna>"
+		else:
 			current_image_count = len(image_paths or [])
 			all_image_paths.extend(image_paths or [])
 			final = f"{history_str}<yuki>{current_prompt}{'<|vision_start|><|image_pad|><|vision_end|>' * current_image_count}</yuki>\n<yuna>"
-		elif useHistory:
-			final = f"{history_str}<yuna>"
-		else:
-			final = text or ""
-
-		if continue_from:
-			final += continue_from
 
 		return final, all_image_paths
 
@@ -95,7 +114,6 @@ class AGIWorker:
 		self.config = yunaConfig
 
 		# --- PROCESS ATTACHMENTS (TEXT) ---
-		# Attachments are appended to the text to appear inside the <yuki> block later
 		if attachments:
 			data_blocks = ""
 			for att in attachments:
@@ -104,6 +122,17 @@ class AGIWorker:
 			if data_blocks:
 				text = f"{text}{data_blocks}" if text else data_blocks
 
+		# --- PARSE DB SYS FILES ---
+		sys_tags = ""
+		for tag in ["memory", "shujinko", "aibo"]:
+			filepath = f"db/{tag}.txt"
+			if os.path.exists(filepath):
+				with open(filepath, "r", encoding="utf-8") as f:
+					content = f.read().strip()
+					if content:
+						# No interior newlines per instruction
+						sys_tags += f"<{tag}>{content}</{tag}>\n"
+
 		# --- BOS TOKEN HANDLING ---
 		bos_token = yunaConfig["yuna"]["bos"][0] if yunaConfig["yuna"]["bos"][1] else ""
 
@@ -111,58 +140,29 @@ class AGIWorker:
 		all_image_paths = []
 		final_prompt = ""
 		stop_tokens = yunaConfig["yuna"]["stop"]
-
-		# Define cache file based on mode
 		cache_file = None
 
 		if mode == "naked":
 			cache_file = "db/cache_naked.safetensors"
-
-			# Naked: <bos>{text} - NO STOP TOKENS used (except EOS if model defaults)
-			final_prompt = f"{bos_token}{text}"
+			final_prompt = f"{bos_token}\n{text}"
 			if image_paths:
 				all_image_paths = image_paths
-			# User requested NO stop tokens for naked mode
 			stop_tokens = []
 
 		elif mode == "loli":
 			cache_file = "db/cache_loli.safetensors"
-
-			# LoliConnect: <bos>{pre_prompt_processed}
-			# Note: The 'text' argument here comes from index.py pre-processed (replacing {input} etc)
-			# The structure is already baked into 'text' by the server route logic.
-			final_prompt = f"{bos_token}{text}"
+			final_prompt = f"{bos_token}\n{text}"
 			if image_paths:
 				all_image_paths = image_paths
-			# User requested stop tokens FOR loli connect
-			stop_tokens = yunaConfig["yuna"]["stop"]
 
-		elif mode == "extend":
+		elif mode in ["chat", "extend", "second_yuna"]:
 			cache_file = "db/cache_chat.safetensors"
+			final_prompt, all_image_paths = self.get_history_text(chat_history, text, useHistory, yunaConfig, image_paths, mode=mode)
 
-			# Reconstruct history but leave the last turn open
-			# Assuming 'text' passed in is just raw history text, we need to parse/format it properly
-			# Or if chat_history is passed, use get_history_text but strip the closing tag
-			if chat_history:
-				final_prompt, _ = self.get_history_text(chat_history, "", useHistory, yunaConfig, [], append_current_user=False)
-				# Strip the last newline and closing tag (e.g. </yuna>) to allow continuation
-				# Simple heuristic: remove last newline and last 7 chars (</yuna>)
-				if final_prompt.strip().endswith("</yuna>"):
-					final_prompt = final_prompt.strip()[:-7]
-			else:
-				# Fallback to raw text if no structured history provided, assuming user knows what they are doing
-				final_prompt = text
+			if continue_from:
+				final_prompt += continue_from
 
-		else:  # Chat Mode
-			cache_file = "db/cache_chat.safetensors"
-
-			final_prompt, all_image_paths = self.get_history_text(chat_history, text, useHistory, yunaConfig, image_paths, append_current_user, continue_from)
-			# Standard Chat Template
-			if aibo:
-				final_prompt = f"{bos_token}\n{aibo}\n<dialog>\n{final_prompt}"
-			else:
-				final_prompt = f"{bos_token}\n<dialog>\n{final_prompt}"
-			stop_tokens = yunaConfig["yuna"]["stop"]
+			final_prompt = f"{bos_token}\n{sys_tags}<dialog>\n{final_prompt}"
 
 		# --- EXECUTION ---
 		mode_backend = self.config["server"]["yuna_text_mode"]
@@ -221,11 +221,24 @@ class AGIWorker:
 	def export_audio(self, input_file, output_filename):
 		AudioSegment.from_file(input_file).export(output_filename, format="mp3")
 
-	def transcribe_audio(self, audio_file):
-		return self.audio_model.generate(audio_file).text.strip()
+	def transcribe_audio(self, audio_data):
+		# If the input is in-memory bytes from Flask
+		if isinstance(audio_data, bytes):
+			# Decode bytes via FFmpeg pipe:0 (no disk write)
+			samples, orig_sr = audio_read(audio_data)
+
+			# Qwen3/Whisper ASR models require 16kHz
+			target_sr = getattr(self.audio_model, 'sample_rate', 16000)
+			if orig_sr != target_sr:
+				samples = resample_audio(samples, orig_sr, target_sr)
+
+			# Convert to an MLX array. This smartly bypasses the filepath validation checks inside the model's generate() function.
+			audio_data = mx.array(samples, dtype=mx.float32)
+
+		return self.audio_model.generate(audio_data).text.strip()
 
 	def speak_text(self, text, output_filename=None):
-		output_filename = f"static/audio/{uuid.uuid4()}.m4a"
+		output_filename = f"db/{uuid.uuid4()}.m4a"
 		mode = self.config["server"]["yuna_speech_mode"]
 
 		if mode == "siri":
@@ -245,11 +258,11 @@ class AGIWorker:
 			if not hasattr(self, "voice_model") or self.voice_model is None:
 				self.load_voice_model()
 			result = inference_hanasu(model=self.voice_model, text=text, device="mps", stream=False)
-			temp_wav = f"static/audio/temp_{uuid.uuid4()}.wav"
-			sf.write(temp_wav, result, 48000)
-			subprocess.run(["ffmpeg", "-y", "-v", "quiet", "-threads", "0", "-i", temp_wav, "-acodec", "alac", output_filename], check=True)
-			os.remove(temp_wav)
-			return output_filename, None
+			wav_io = io.BytesIO()
+			sf.write(wav_io, result, 48000, format='WAV')
+			wav_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')
+			data_uri = f"data:audio/wav;base64,{wav_b64}"
+			return data_uri, None
 
 	def start(self):
 		self.load_text_model()

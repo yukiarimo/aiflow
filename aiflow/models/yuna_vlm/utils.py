@@ -314,15 +314,21 @@ def load_image(image_source, timeout=10):
 
 def resize_image(img, max_size):
 	ratio = min(max_size[0] / img.width, max_size[1] / img.height)
+	if ratio >= 1.0:
+		return img  # No need to upscale
 	new_size = (int(img.width * ratio), int(img.height * ratio))
-	return img.resize(new_size)
+	return img.resize(new_size, Image.Resampling.LANCZOS)
 
 
 def process_image(img, resize_shape, image_processor):
 	if isinstance(img, str):
 		img = load_image(img)
-	if resize_shape is not None and not isinstance(image_processor, BaseImageProcessor):
-		img = resize_image(img, resize_shape)
+
+	# Hard limit boundaries to prevent MLX from spawning terminal VRAM explosions on huge files
+	if resize_shape is None:
+		resize_shape = (448, 448)
+
+	img = resize_image(img, resize_shape)
 	return img
 
 

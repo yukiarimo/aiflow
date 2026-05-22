@@ -119,6 +119,14 @@ def convert(local_path, mlx_path="mlx_model", quantize=False, q_group_size=64, q
 		for file in files:
 			shutil.copy(file, mlx_path)
 
+	# Strip monkey-patched inference objects that break deepcopy serialization
+	if hasattr(processor, "detokenizer"):
+		delattr(processor, "detokenizer")
+	if hasattr(processor, "tokenizer") and hasattr(processor.tokenizer, "stopping_criteria"):
+		delattr(processor.tokenizer, "stopping_criteria")
+	elif hasattr(processor, "stopping_criteria"):
+		delattr(processor, "stopping_criteria")
+
 	processor.save_pretrained(mlx_path)
 	save_config(config, config_path=mlx_path / "config.json")
 	print(f"[INFO] Conversion complete! Model saved to {mlx_path}")

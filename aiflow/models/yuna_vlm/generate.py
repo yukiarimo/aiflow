@@ -61,13 +61,21 @@ def wired_limit(model, streams=None):
 			return
 
 	model_bytes = tree_reduce(lambda acc, x: acc + x.nbytes if isinstance(x, mx.array) else acc, model, 0)
-	max_rec_size = mx.metal.device_info()["max_recommended_working_set_size"]
-	if model_bytes > 0.9 * max_rec_size:
+
+	try:
+		device_info = mx.device_info()
+	except AttributeError:
+		device_info = mx.metal.device_info()
+
+	max_rec_size = device_info.get("max_recommended_working_set_size", 0)
+
+	if max_rec_size > 0 and model_bytes > 0.9 * max_rec_size:
 		model_mb = model_bytes // 2**20
 		max_rec_mb = max_rec_size // 2**20
 		print(f"[WARNING] Generating with a model that requires {model_mb} MB "
 		      f"which is close to the maximum recommended size of {max_rec_mb} "
 		      "MB. This can be slow.")
+
 	old_limit = mx.set_wired_limit(max_rec_size)
 	try:
 		yield
@@ -128,7 +136,7 @@ def generate_step(input_ids, model, pixel_values, mask, max_tokens=256, temperat
 
 	def sample(logits):
 		nonlocal mu
-		
+
 		if logit_noise > 0.0:
 			noise = mx.random.normal(logits.shape, dtype=logits.dtype) * logit_noise
 			logits = logits + noise
@@ -170,16 +178,16 @@ def generate_step(input_ids, model, pixel_values, mask, max_tokens=256, temperat
 			probs = mx.softmax(logits, axis=-1)
 			sorted_indices = mx.argsort(probs, axis=-1)[..., ::-1]
 			sorted_probs = probs[..., sorted_indices.squeeze(0)]
-			
+
 			surprise = -mx.log2(sorted_probs + 1e-10)
 			mask = surprise <= mu
 			mask = mx.logical_or(mask, mx.arange(mask.shape[-1]) == 0)
-			
+
 			top_probs = mx.where(mask, sorted_probs, mx.zeros_like(sorted_probs))
 			sorted_token_idx = mx.random.categorical(mx.log(top_probs + 1e-10))
 			token = sorted_indices.squeeze(0)[sorted_token_idx]
 			token = token.reshape(1)
-			
+
 			p_chosen = sorted_probs.squeeze(0)[sorted_token_idx]
 			observed_surprise = -mx.log2(p_chosen + 1e-10).item()
 			mu = mu - mirostat_eta * (observed_surprise - mirostat_tau)
@@ -331,18 +339,52 @@ def stream_generate(model, processor, prompt, image=None, audio=None, stop_strin
 
 				if common_len < len(curr_tokens):
 					input_ids = input_ids[:, common_len:]
+					if mask is not None:
+						mask = mask[:, common_len:]
 
 				if image_token_index is not None and pixel_values is not None:
 					cached_part = curr_tokens[:common_len]
 					if image_token_index in cached_part:
 						count_total = curr_tokens.count(image_token_index)
 						count_cached = cached_part.count(image_token_index)
+
 						if count_cached == count_total:
 							pixel_values = None
 							if "image_grid_thw" in kwargs:
 								del kwargs["image_grid_thw"]
 							if "video_grid_thw" in kwargs:
 								del kwargs["video_grid_thw"]
+						elif count_cached > 0:
+							# Locate the spatial merge divisor to align patch slicing with Qwen token mapping
+							spatial_merge_size = getattr(model.config.vision_config, "spatial_merge_size", 2)
+
+							if "image_grid_thw" in kwargs:
+								grid_thw = kwargs["image_grid_thw"]
+								grid_list = grid_thw.tolist() if isinstance(grid_thw, mx.array) else grid_thw
+
+								accum_tokens = 0
+								accum_patches = 0
+								images_to_drop = 0
+
+								for thw in grid_list:
+									t_patches = thw[0] * thw[1] * thw[2] if len(thw) >= 3 else (thw[0] * thw[1])
+									t_tokens = thw[0] * (thw[1] // spatial_merge_size) * (thw[2] // spatial_merge_size) if len(thw) >= 3 else ((thw[0] // spatial_merge_size) * (thw[1] // spatial_merge_size))
+
+									if accum_tokens + t_tokens <= count_cached:
+										accum_tokens += t_tokens
+										accum_patches += t_patches
+										images_to_drop += 1
+									else:
+										break
+
+								if images_to_drop > 0:
+									kwargs["image_grid_thw"] = mx.array(grid_list[images_to_drop:])
+									# Silently drop the patch data for the older cached images
+									if pixel_values is not None and len(pixel_values.shape) >= 1:
+										if pixel_values.shape[0] == len(grid_list):
+											pixel_values = pixel_values[images_to_drop:]
+										else:
+											pixel_values = pixel_values[accum_patches:]
 
 		if prompt_cache is None:
 			prompt_cache = make_prompt_cache(model.language_model, kwargs.get("max_kv_size"))
