@@ -33,8 +33,8 @@ def load_conditional_imports(config):
 			import coremltools as ct
 			globals()["ct"] = ct
 
-		from aiflow.models.vits.models import inference as inference_vits
-		from aiflow.models.vits.models import load_model as load_model_vits
+		from aiflow.models.yuna_speech.vits.models import inference as inference_vits
+		from aiflow.models.yuna_speech.vits.models import load_model as load_model_vits
 
 		globals()["inference_vits"] = inference_vits
 		globals()["load_model_vits"] = load_model_vits
