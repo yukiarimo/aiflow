@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from . import utils
 from .models import (AVAILABLE_FLOW_TYPES, DurationDiscriminatorV2, MultiPeriodDiscriminator, SynthesizerTrn, slice_segments)
-from .text import symbols, cleaned_text_to_sequence
+from aiflow.models.yuna_speech.text import symbols, cleaned_text_to_sequence
 import random
 import torch.utils.data
 

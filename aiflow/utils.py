@@ -23,8 +23,6 @@ from email.header import decode_header
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import hashlib
-from PIL import Image
-from io import BytesIO
 
 
 def get_env(key, default=None):
@@ -34,18 +32,15 @@ def get_env(key, default=None):
 class ChatHistoryManager:
 	def __init__(self, file_path="db/chat.json"):
 		self.file_path = file_path
-		self._ensure_file()
-
-	def _ensure_file(self):
-		if not os.path.exists(self.file_path):
-			with open(self.file_path, "w", encoding="utf-8") as f:
-				json.dump([], f)
 
 	def load_history(self):
 		try:
 			with open(self.file_path, "r", encoding="utf-8") as f:
 				return json.load(f)
-		except:
+
+		except (FileNotFoundError, json.JSONDecodeError):
+			with open(self.file_path, "w", encoding="utf-8") as f:
+				json.dump([], f)
 			return []
 
 	def save_history(self, history):
@@ -64,28 +59,13 @@ class ChatHistoryManager:
 
 
 def get_config(config_path="static/config.json", config=None):
-	default_config = {"yuna": {"batch_size": 512, "bos": ["<|endoftext|>", True], "context_length": 16384, "flash_attn": True, "gpu_layers": -1, "kokoro": False, "last_n_tokens_size": 128, "max_new_tokens": 1024, "offload_kqv": True, "repetition_penalty": 1.1, "seed": -1, "stop": ["<memory>", "</memory>", "<shujinko>", "</shujinko>", "<aibo>", "</aibo>", "<dialog>", "</dialog>", "<yuki>", "</yuki>", "<yuna>", "</yuna>", "<hito>", "</hito>", "<qt>", "</qt>", "<action>", "</action>", "<data>", "</data>"], "temperature": 0.7, "threads": 8, "top_k": 40, "top_p": 0.9, "use_mlock": True, "use_mmap": True, }, "server": {"yuna_speech_mode": "hanasu", "yuna_speech_model": ["/Users/yuki/Documents/Github/aiflow/aiflow/models/hanasu/config.json", "/Users/yuki/Documents/Github/yuna-ai/lib/models/hanasu/G_6000.pth"], "yuna_audio_model": "/Users/yuki/Documents/Github/yuna-ai/lib/models/audio/qwen3-asr-mlx", "yuna_audio_mode": "yuna_audio", "yuna_text_model": "/Users/yuki/Documents/Github/yuna-ai/lib/models/yuna/yuna-ai-v3-miru-loli-mlx", "yuna_text_mode": "yuna_vlm", "sounds": True, }, }
+	default_config = {"yuna": {"batch_size": 512, "bos": ["<|endoftext|>", True], "context_length": 16384, "flash_attn": True, "gpu_layers": -1, "kokoro": False, "last_n_tokens_size": 128, "max_new_tokens": 1024, "offload_kqv": True, "repetition_penalty": 1.1, "seed": -1, "stop": ["<memory>", "</memory>", "<shujinko>", "</shujinko>", "<aibo>", "</aibo>", "<dialog>", "</dialog>", "<yuki>", "</yuki>", "<yuna>", "</yuna>", "<hito>", "</hito>", "<qt>", "</qt>", "<action>", "</action>", "<data>", "</data>"], "temperature": 0.7, "threads": 8, "top_k": 40, "top_p": 0.9, "use_mlock": True, "use_mmap": True, }, "server": {"yuna_speech_mode": "vits", "yuna_speech_model": ["/Users/yuki/Documents/Github/aiflow/aiflow/models/vits/config.json", "/Users/yuki/Documents/Github/yuna-ai/lib/models/vits/G_6000.pth"], "yuna_audio_model": "/Users/yuki/Documents/Github/yuna-ai/lib/models/audio/qwen3-asr-mlx", "yuna_audio_mode": "yuna_audio", "yuna_text_model": "/Users/yuki/Documents/Github/yuna-ai/lib/models/yuna/yuna-ai-v3-miru-loli-mlx", "yuna_text_mode": "yuna_vlm", "sounds": True, }, }
 
 	if not os.path.exists(config_path):
 		return default_config
 	mode = "r" if config is None else "w"
 	with open(config_path, mode) as f:
 		return json.load(f) if config is None else json.dump(config, f, indent=4)
-
-
-def clearText(text):
-	text = text[0] if isinstance(text, tuple) else text
-	original_text = text
-	replacements = [("</yuki>", ""), ("</yuna>", ""), ("<yuki>", ""), ("<yuna>", "")]
-	for old, new in replacements:
-		text = text.replace(old, new)
-	text = re.sub(r"<[^>]+>", "", text)
-	text = re.sub(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF]+", "", text)
-	text = re.sub(r":-?\)|:-?\(|;-?\)|:-?D|:-?P", "", text)
-	text = " ".join(text.split()).strip()
-	if text != original_text:
-		return clearText(text)
-	return text
 
 
 def reverse_image_search(image_path, session_token=None):

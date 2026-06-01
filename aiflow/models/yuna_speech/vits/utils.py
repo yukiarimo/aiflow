@@ -22,20 +22,16 @@ def spectral_normalize_torch(magnitudes):
 def _get_window(y, win_size):
 	dtype_device = str(y.dtype) + "_" + str(y.device)
 	wnsize_dtype_device = str(win_size) + "_" + dtype_device
-
 	if wnsize_dtype_device not in hann_window: hann_window[wnsize_dtype_device] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
-
 	return hann_window[wnsize_dtype_device], wnsize_dtype_device
 
 
 def _get_mel_basis(spec, n_fft, num_mels, sampling_rate, fmin, fmax):
 	dtype_device = str(spec.dtype) + "_" + str(spec.device)
 	fmax_dtype_device = str(fmax) + "_" + dtype_device
-
 	if fmax_dtype_device not in mel_basis:
 		mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
 		mel_basis[fmax_dtype_device] = torch.from_numpy(mel).to(dtype=spec.dtype, device=spec.device)
-
 	return mel_basis[fmax_dtype_device], fmax_dtype_device
 
 
@@ -43,56 +39,46 @@ def _compute_stft(y, n_fft, hop_size, win_size, window, center):
 	y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)), mode="reflect").squeeze(1)
 	stft_args = {'input': y, 'n_fft': n_fft, 'hop_length': hop_size, 'win_length': win_size, 'window': window, 'center': center, 'pad_mode': 'reflect', 'normalized': False, 'onesided': True}
 	if version.parse(torch.__version__) >= version.parse("2"): stft_args['return_complex'] = False
-
 	return torch.stft(**stft_args)
 
 
 def mel_spectrogram_torch(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
 	if torch.min(y) < -1.0: print("min value is ", torch.min(y))
 	if torch.max(y) > 1.0: print("max value is ", torch.max(y))
-
 	window, _ = _get_window(y, win_size)
 	mel_filter, _ = _get_mel_basis(y, n_fft, num_mels, sampling_rate, fmin, fmax)
 	spec = _compute_stft(y, n_fft, hop_size, win_size, window, center)
 	spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
-
 	return spectral_normalize_torch(torch.matmul(mel_filter, spec))
 
 
 def piecewise_rational_quadratic_transform(inputs, unnormalized_widths, unnormalized_heights, unnormalized_derivatives, inverse=False, tails=None, tail_bound=1.0, min_bin_width=1e-3, min_bin_height=1e-3, min_derivative=1e-3):
 	if tails is None: spline_fn, spline_kwargs = rational_quadratic_spline, {}
 	else: spline_fn, spline_kwargs = unconstrained_rational_quadratic_spline, {"tails": tails, "tail_bound": tail_bound}
-
 	return spline_fn(inputs, unnormalized_widths, unnormalized_heights, unnormalized_derivatives, inverse=inverse, min_bin_width=min_bin_width, min_bin_height=min_bin_height, min_derivative=min_derivative, **spline_kwargs)
 
 
 def unconstrained_rational_quadratic_spline(inputs, unnormalized_widths, unnormalized_heights, unnormalized_derivatives, inverse=False, tails="linear", tail_bound=1.0, min_bin_width=1e-3, min_bin_height=1e-3, min_derivative=1e-3):
 	inside_interval_mask = (inputs >= -tail_bound) & (inputs <= tail_bound)
-	outside_interval_mask = ~inside_interval_mask
-
-	outputs = torch.zeros_like(inputs)
-	logabsdet = torch.zeros_like(inputs)
-
 	if tails != "linear": raise RuntimeError(f"{tails} tails are not implemented.")
-
-	unnormalized_derivatives = F.pad(unnormalized_derivatives, pad=(1, 1))
 	constant = np.log(np.exp(1 - min_derivative) - 1)
-	unnormalized_derivatives[..., 0] = constant
-	unnormalized_derivatives[..., -1] = constant
+	shape = list(unnormalized_derivatives.shape)
+	shape[-1] = 1
+	const_tensor = torch.full(shape, constant, dtype=unnormalized_derivatives.dtype, device=unnormalized_derivatives.device)
+	unnormalized_derivatives = torch.cat([const_tensor, unnormalized_derivatives, const_tensor], dim=-1)  # Concatenate cleanly on the final dimension
 
-	outputs[outside_interval_mask] = inputs[outside_interval_mask]
-	logabsdet[outside_interval_mask] = 0
-	outputs[inside_interval_mask], logabsdet[inside_interval_mask] = rational_quadratic_spline(inputs[inside_interval_mask], unnormalized_widths[inside_interval_mask, :], unnormalized_heights[inside_interval_mask, :], unnormalized_derivatives[inside_interval_mask, :], inverse=inverse, left=-tail_bound, right=tail_bound, bottom=-tail_bound, top=tail_bound, min_bin_width=min_bin_width, min_bin_height=min_bin_height, min_derivative=min_derivative)
+	# Avoid boolean indexing (inputs[inside_interval_mask]) which breaks CoreML dynamic shapes. We clamp inputs to safely execute the math on ALL elements without OutOfBounds errors.
+	spline_inputs = torch.clamp(inputs, min=-tail_bound, max=tail_bound)
+	spline_outputs, spline_logabsdet = rational_quadratic_spline(spline_inputs, unnormalized_widths, unnormalized_heights, unnormalized_derivatives, inverse=inverse, left=-tail_bound, right=tail_bound, bottom=-tail_bound, top=tail_bound, min_bin_width=min_bin_width, min_bin_height=min_bin_height, min_derivative=min_derivative)
 
+	# Use torch.where to cleanly merge the evaluated splines with the linear tails
+	outputs = torch.where(inside_interval_mask, spline_outputs, inputs)
+	logabsdet = torch.where(inside_interval_mask, spline_logabsdet, torch.zeros_like(inputs))
 	return outputs, logabsdet
 
 
 def rational_quadratic_spline(inputs, unnormalized_widths, unnormalized_heights, unnormalized_derivatives, inverse=False, left=0.0, right=1.0, bottom=0.0, top=1.0, min_bin_width=1e-3, min_bin_height=1e-3, min_derivative=1e-3):
-	if torch.min(inputs) < left or torch.max(inputs) > right: raise ValueError("Input to a transform is not within its domain")
-
 	num_bins = unnormalized_widths.shape[-1]
-	if min_bin_width * num_bins > 1.0: raise ValueError("Minimal bin width too large for the number of bins")
-	if min_bin_height * num_bins > 1.0: raise ValueError("Minimal bin height too large for the number of bins")
 
 	# Calculate widths
 	widths = F.softmax(unnormalized_widths, dim=-1)
@@ -100,7 +86,12 @@ def rational_quadratic_spline(inputs, unnormalized_widths, unnormalized_heights,
 	cumwidths = torch.cumsum(widths, dim=-1)
 	cumwidths = F.pad(cumwidths, pad=(1, 0), mode="constant", value=0.0)
 	cumwidths = (right - left) * cumwidths + left
-	cumwidths[..., 0], cumwidths[..., -1] = left, right
+
+	# Avoid inplace element assignment cumwidths[..., 0] = left
+	left_t = torch.full_like(cumwidths[..., :1], left)
+	right_t = torch.full_like(cumwidths[..., :1], right)
+	cumwidths = torch.cat([left_t, cumwidths[..., 1:-1], right_t], dim=-1)
+
 	widths = cumwidths[..., 1:] - cumwidths[..., :-1]
 
 	# Calculate derivatives
@@ -112,13 +103,23 @@ def rational_quadratic_spline(inputs, unnormalized_widths, unnormalized_heights,
 	cumheights = torch.cumsum(heights, dim=-1)
 	cumheights = F.pad(cumheights, pad=(1, 0), mode="constant", value=0.0)
 	cumheights = (top - bottom) * cumheights + bottom
-	cumheights[..., 0], cumheights[..., -1] = bottom, top
+
+	# Avoid inplace element assignment cumheights[..., 0] = bottom
+	bottom_t = torch.full_like(cumheights[..., :1], bottom)
+	top_t = torch.full_like(cumheights[..., :1], top)
+	cumheights = torch.cat([bottom_t, cumheights[..., 1:-1], top_t], dim=-1)
 	heights = cumheights[..., 1:] - cumheights[..., :-1]
 
 	# Find bin indices and gather inputs
 	bin_locations = cumheights if inverse else cumwidths
-	bin_locations[..., -1] += 1e-6
+
+	# Avoid inplace addition bin_locations[..., -1] += 1e-6
+	last_elem = bin_locations[..., -1:] + 1e-6
+	bin_locations = torch.cat([bin_locations[..., :-1], last_elem], dim=-1)
 	bin_idx = torch.sum(inputs[..., None] >= bin_locations, dim=-1)[..., None] - 1
+
+	# Explicitly cast to Long/Integer so CoreML knows it's a valid index for .gather()!
+	bin_idx = bin_idx.long()
 	input_cumwidths = cumwidths.gather(-1, bin_idx)[..., 0]
 	input_bin_widths = widths.gather(-1, bin_idx)[..., 0]
 	input_cumheights = cumheights.gather(-1, bin_idx)[..., 0]
@@ -131,28 +132,23 @@ def rational_quadratic_spline(inputs, unnormalized_widths, unnormalized_heights,
 		a = (inputs - input_cumheights) * (input_derivatives + input_derivatives_plus_one - 2 * input_delta) + input_heights * (input_delta - input_derivatives)
 		b = input_heights * input_derivatives - (inputs - input_cumheights) * (input_derivatives + input_derivatives_plus_one - 2 * input_delta)
 		c = -input_delta * (inputs - input_cumheights)
-
 		discriminant = b.pow(2) - 4 * a * c
-		assert (discriminant >= 0).all()
 
+		# Clamping discriminant strictly to prevent sqrt(negative) NaNs during tracing
+		discriminant = torch.clamp(discriminant, min=1e-6)
 		root = (2 * c) / (-b - torch.sqrt(discriminant))
 		outputs = root * input_bin_widths + input_cumwidths
-
 		theta_one_minus_theta = root * (1 - root)
 		denominator = input_delta + ((input_derivatives + input_derivatives_plus_one - 2 * input_delta) * theta_one_minus_theta)
 		derivative_numerator = input_delta.pow(2) * (input_derivatives_plus_one * root.pow(2) + 2 * input_delta * theta_one_minus_theta + input_derivatives * (1 - root).pow(2))
 		logabsdet = torch.log(derivative_numerator) - 2 * torch.log(denominator)
-
 		return outputs, -logabsdet
-	# Forward pass
 	else:
 		theta = (inputs - input_cumwidths) / input_bin_widths
 		theta_one_minus_theta = theta * (1 - theta)
-
 		numerator = input_heights * (input_delta * theta.pow(2) + input_derivatives * theta_one_minus_theta)
 		denominator = input_delta + ((input_derivatives + input_derivatives_plus_one - 2 * input_delta) * theta_one_minus_theta)
 		outputs = input_cumheights + numerator / denominator
-
 		derivative_numerator = input_delta.pow(2) * (input_derivatives_plus_one * theta.pow(2) + 2 * input_delta * theta_one_minus_theta + input_derivatives * (1 - theta).pow(2))
 		logabsdet = torch.log(derivative_numerator) - 2 * torch.log(denominator)
 		return outputs, logabsdet
@@ -164,7 +160,6 @@ def load_checkpoint(checkpoint_path, model, optimizer=None):
 	iteration = checkpoint_dict["iteration"]
 	learning_rate = checkpoint_dict["learning_rate"]
 	if optimizer is not None: optimizer.load_state_dict(checkpoint_dict["optimizer"])
-
 	saved_state_dict = checkpoint_dict["model"]
 	state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
 	new_state_dict = {}
@@ -211,11 +206,9 @@ def scan_checkpoint(dir_path, regex):
 
 def latest_checkpoint_path(dir_path, regex="G_*.pth"):
 	f_list = scan_checkpoint(dir_path, regex)
-
 	if not f_list: return None
 	x = f_list[-1]
 	print(x)
-
 	return x
 
 
@@ -290,14 +283,11 @@ def get_hparams(init=True):
 	model_dir = os.path.join("./logs", args.model)
 	os.makedirs(model_dir, exist_ok=True)
 	config_save_path = os.path.join(model_dir, "config.json")
-
 	if init: shutil.copy(args.config, config_save_path)
 	with open(config_save_path, "r") as f:
 		config = json.load(f)
-
 	hparams = HParams(**config)
 	hparams.model_dir = model_dir
-
 	return hparams
 
 

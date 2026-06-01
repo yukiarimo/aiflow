@@ -1,19 +1,21 @@
 import math
 import queue
 import threading
+import os
+import re
+import subprocess
+from pathlib import Path
 import torch
 from torch import nn
 from torch.nn import Conv1d, Conv2d, ConvTranspose1d
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, weight_norm
-from . import monotonic_align
-from . import utils
-from .text import symbols, split_and_process_text, cleaned_text_to_sequence, sequence_to_text
+from . import monotonic_align, utils
+from aiflow.models.yuna_speech.text import symbols, split_and_process_text, cleaned_text_to_sequence, sequence_to_text, _symbol_to_id
 import numpy as np
 from tqdm import tqdm
 import soundfile as sf
-from pathlib import Path
-from .utils import mel_spectrogram_torch, piecewise_rational_quadratic_transform
+from .utils import mel_spectrogram_torch, piecewise_rational_quadratic_transform, HParams
 import librosa
 import gc
 
@@ -29,13 +31,8 @@ def get_padding(kernel_size, dilation=1):
 	return (kernel_size * dilation - dilation) // 2
 
 
-def convert_pad_shape(pad_shape):
-	return [item for sublist in pad_shape[::-1] for item in sublist]
-
-
 def slice_segments(x, ids_str, segment_size=4):
 	ret = torch.zeros_like(x[:, :, :segment_size])
-
 	for i in range(x.size(0)):
 		idx_str = ids_str[i]
 		idx_end = idx_str + segment_size
@@ -46,7 +43,6 @@ def slice_segments(x, ids_str, segment_size=4):
 			available_size = x.size(2) - idx_str
 			if available_size > 0: ret[i, :, :available_size] = x[i, :, idx_str:x.size(2)]
 		else: ret[i] = x[i, :, idx_str:idx_end]
-
 	return ret
 
 
@@ -62,12 +58,10 @@ def subsequent_mask(length):
 	return torch.tril(torch.ones(length, length)).unsqueeze(0).unsqueeze(0)
 
 
-@torch.jit.script
 def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
-	n_channels_int = n_channels[0]
 	in_act = input_a + input_b
-	t_act = torch.tanh(in_act[:, :n_channels_int, :])
-	s_act = torch.sigmoid(in_act[:, n_channels_int:, :])
+	t_act = torch.tanh(in_act[:, :n_channels, :])
+	s_act = torch.sigmoid(in_act[:, n_channels:, :])
 	return t_act * s_act
 
 
@@ -78,16 +72,13 @@ def sequence_mask(length, max_length=None):
 
 
 def generate_path(duration, mask):
-	"""
-	duration: [b, 1, t_x]
-	mask: [b, 1, t_y, t_x]
-	"""
+	"""duration: [b, 1, t_x], mask: [b, 1, t_y, t_x]"""
 	b, _, t_y, t_x = mask.shape
 	cum_duration = torch.cumsum(duration, -1)
 	cum_duration_flat = cum_duration.view(b * t_x)
 	path = sequence_mask(cum_duration_flat, t_y).to(mask.dtype)
 	path = path.view(b, t_x, t_y)
-	path = path - F.pad(path, convert_pad_shape([[0, 0], [1, 0], [0, 0]]))[:, :-1]
+	path = path - F.pad(path, (0, 0, 1, 0))[:, :-1]
 	return path.unsqueeze(1).transpose(2, 3) * mask
 
 
@@ -101,7 +92,6 @@ class Encoder(nn.Module):
 		self.kernel_size = kernel_size
 		self.p_dropout = p_dropout
 		self.window_size = window_size
-
 		self.drop = nn.Dropout(p_dropout)
 		self.attn_layers = nn.ModuleList()
 		self.norm_layers_1 = nn.ModuleList()
@@ -111,7 +101,6 @@ class Encoder(nn.Module):
 
 		if "gin_channels" in kwargs:
 			self.gin_channels = kwargs["gin_channels"]
-
 			if self.gin_channels != 0:
 				self.spk_emb_linear = nn.Linear(self.gin_channels, self.hidden_channels)
 				self.cond_layer_idx = (kwargs["cond_layer_idx"] if "cond_layer_idx" in kwargs else 2)
@@ -126,7 +115,6 @@ class Encoder(nn.Module):
 	def forward(self, x, x_mask, g=None):
 		attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
 		x = x * x_mask
-
 		for i in range(self.n_layers):
 			if i == self.cond_layer_idx and g is not None:
 				g = self.spk_emb_linear(g.transpose(1, 2))
@@ -140,7 +128,6 @@ class Encoder(nn.Module):
 			y = self.ffn_layers[i](x, x_mask)
 			y = self.drop(y)
 			x = self.norm_layers_2[i](x + y)
-
 		x = x * x_mask
 		return x
 
@@ -156,7 +143,6 @@ class Decoder(nn.Module):
 		self.p_dropout = p_dropout
 		self.proximal_bias = proximal_bias
 		self.proximal_init = proximal_init
-
 		self.drop = nn.Dropout(p_dropout)
 		self.self_attn_layers = nn.ModuleList()
 		self.norm_layers_0 = nn.ModuleList()
@@ -164,7 +150,6 @@ class Decoder(nn.Module):
 		self.norm_layers_1 = nn.ModuleList()
 		self.ffn_layers = nn.ModuleList()
 		self.norm_layers_2 = nn.ModuleList()
-
 		for i in range(self.n_layers):
 			self.self_attn_layers.append(MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias, proximal_init=proximal_init))
 			self.norm_layers_0.append(LayerNorm(hidden_channels))
@@ -178,20 +163,16 @@ class Decoder(nn.Module):
 		self_attn_mask = subsequent_mask(x_mask.size(2)).to(device=x.device, dtype=x.dtype)
 		encdec_attn_mask = h_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
 		x = x * x_mask
-
 		for i in range(self.n_layers):
 			y = self.self_attn_layers[i](x, x, self_attn_mask)
 			y = self.drop(y)
 			x = self.norm_layers_0[i](x + y)
-
 			y = self.encdec_attn_layers[i](x, h, encdec_attn_mask)
 			y = self.drop(y)
 			x = self.norm_layers_1[i](x + y)
-
 			y = self.ffn_layers[i](x, x_mask)
 			y = self.drop(y)
 			x = self.norm_layers_2[i](x + y)
-
 		x = x * x_mask
 		return x
 
@@ -200,7 +181,6 @@ class MultiHeadAttention(nn.Module):
 	def __init__(self, channels, out_channels, n_heads, p_dropout=0.0, window_size=None, heads_share=True, block_length=None, proximal_bias=False, proximal_init=False):
 		super().__init__()
 		assert channels % n_heads == 0
-
 		self.channels = channels
 		self.out_channels = out_channels
 		self.n_heads = n_heads
@@ -211,7 +191,6 @@ class MultiHeadAttention(nn.Module):
 		self.proximal_bias = proximal_bias
 		self.proximal_init = proximal_init
 		self.attn = None
-
 		self.k_channels = channels // n_heads
 		self.conv_q = nn.Conv1d(channels, channels, 1)
 		self.conv_k = nn.Conv1d(channels, channels, 1)
@@ -243,20 +222,17 @@ class MultiHeadAttention(nn.Module):
 		return x
 
 	def attention(self, query, key, value, mask=None):
-		# Reshape [b, d, t] -> [b, n_h, t, d_k]
 		b, d, t_s, t_t = (*key.size(), query.size(2))
 		query = query.view(b, self.n_heads, self.k_channels, t_t).transpose(2, 3)
 		key = key.view(b, self.n_heads, self.k_channels, t_s).transpose(2, 3)
 		value = value.view(b, self.n_heads, self.k_channels, t_s).transpose(2, 3)
 
-		# PyTorch native optimization
 		if self.window_size is None and not self.proximal_bias and self.block_length is None:
 			bool_mask = mask.bool() if mask is not None else None
 			output = F.scaled_dot_product_attention(query, key, value, attn_mask=bool_mask, dropout_p=self.p_dropout if self.training else 0.0)
 			return output.transpose(2, 3).contiguous().view(b, d, t_t), None
 
 		scores = torch.matmul(query / math.sqrt(self.k_channels), key.transpose(-2, -1))
-
 		if self.window_size is not None:
 			assert t_s == t_t, ("Relative attention is only available for self-attention.")
 			key_relative_embeddings = self._get_relative_embeddings(self.emb_rel_k, t_s)
@@ -299,48 +275,43 @@ class MultiHeadAttention(nn.Module):
 		return ret
 
 	def _get_relative_embeddings(self, relative_embeddings, length):
-		# Pad first before slice to avoid using cond ops.
-		pad_length = max(length - (self.window_size + 1), 0)
-		slice_start_position = max((self.window_size + 1) - length, 0)
+		length_t = torch.tensor([length], device=relative_embeddings.device, dtype=torch.long)
+		pad_length = torch.clamp(length_t - (self.window_size + 1), min=0)[0]
+		slice_start_position = torch.clamp((self.window_size + 1) - length_t, min=0)[0]
 		slice_end_position = slice_start_position + 2 * length - 1
-
-		if pad_length > 0:
-			padded_relative_embeddings = F.pad(relative_embeddings, convert_pad_shape([[0, 0], [pad_length, pad_length], [0, 0]]))
-		else:
-			padded_relative_embeddings = relative_embeddings
-
+		b, l_emb, d = relative_embeddings.shape
+		zeros_cache = torch.zeros(b, 8000, d, device=relative_embeddings.device, dtype=relative_embeddings.dtype)
+		zeros = zeros_cache[:, :pad_length, :]
+		padded_relative_embeddings = torch.cat([zeros, relative_embeddings, zeros], dim=1)
 		used_relative_embeddings = padded_relative_embeddings[:, slice_start_position:slice_end_position]
 		return used_relative_embeddings
 
 	def _relative_position_to_absolute_position(self, x):
 		"""x: [b, h, l, 2*l-1], ret: [b, h, l, l]"""
-		batch, heads, length, _ = x.size()
-		# Concat columns of pad to shift from relative to absolute indexing
-		x = F.pad(x, convert_pad_shape([[0, 0], [0, 0], [0, 0], [0, 1]]))
-
-		# Concat extra elements so to add up to shape (len+1, 2*len-1)
-		x_flat = x.view([batch, heads, length * 2 * length])
-		x_flat = F.pad(x_flat, convert_pad_shape([[0, 0], [0, 0], [0, length - 1]]))
-
-		# Reshape and slice out the padded elements
-		x_final = x_flat.view([batch, heads, length + 1, 2 * length - 1])[:, :, :length, length - 1:]
+		batch, heads, length, _ = x.shape
+		i = torch.arange(length, device=x.device, dtype=torch.long).unsqueeze(1)
+		j = torch.arange(length, device=x.device, dtype=torch.long).unsqueeze(0)
+		idx = (length - 1) - i + j
+		idx = idx.unsqueeze(0).unsqueeze(0).expand(batch, heads, length, length)
+		x_final = torch.gather(x, -1, idx)
 		return x_final
 
 	def _absolute_position_to_relative_position(self, x):
 		"""x: [b, h, l, l], ret: [b, h, l, 2*l-1]"""
-		batch, heads, length, _ = x.size()
-
-		# Padd along column
-		x = F.pad(x, convert_pad_shape([[0, 0], [0, 0], [0, 0], [0, length - 1]]))
-		x_flat = x.view([batch, heads, length**2 + length * (length - 1)])
-
-		# Add 0's in the beginning that will skew the elements after reshape
-		x_flat = F.pad(x_flat, convert_pad_shape([[0, 0], [0, 0], [length, 0]]))
-		x_final = x_flat.view([batch, heads, length, 2 * length])[:, :, :, 1:]
+		batch, heads, length, _ = x.shape
+		zeros_cache = torch.zeros(batch, heads, length, 8000, device=x.device, dtype=x.dtype)
+		left_zeros = zeros_cache[:, :, :, :length - 1]
+		right_zeros = zeros_cache[:, :, :, :length]
+		x_pad = torch.cat([left_zeros, x, right_zeros], dim=-1)
+		i = torch.arange(length, device=x.device, dtype=torch.long).unsqueeze(1)
+		j = torch.arange(length * 2 - 1, device=x.device, dtype=torch.long).unsqueeze(0)
+		idx = i + j
+		idx = idx.unsqueeze(0).unsqueeze(0).expand(batch, heads, length, length * 2 - 1)
+		x_final = torch.gather(x_pad, -1, idx)
 		return x_final
 
 	def _attention_bias_proximal(self, length):
-		"""Bias for self-attention to encourage attention to close positions. Args: length: an integer scalar. Returns: a Tensor with shape [1, 1, length, length]"""
+		"""Bias for self-attention to encourage attention to close positions."""
 		r = torch.arange(length, dtype=torch.float32)
 		diff = torch.unsqueeze(r, 0) - torch.unsqueeze(r, 1)
 		return torch.unsqueeze(torch.unsqueeze(-torch.log1p(torch.abs(diff)), 0), 0)
@@ -384,8 +355,7 @@ class FFN(nn.Module):
 
 		pad_l = self.kernel_size - 1
 		pad_r = 0
-		padding = [[0, 0], [0, 0], [pad_l, pad_r]]
-		x = F.pad(x, convert_pad_shape(padding))
+		x = F.pad(x, (pad_l, pad_r))
 		return x
 
 	def _same_padding(self, x):
@@ -394,8 +364,7 @@ class FFN(nn.Module):
 
 		pad_l = (self.kernel_size - 1) // 2
 		pad_r = self.kernel_size // 2
-		padding = [[0, 0], [0, 0], [pad_l, pad_r]]
-		x = F.pad(x, convert_pad_shape(padding))
+		x = F.pad(x, (pad_l, pad_r))
 		return x
 
 
@@ -481,7 +450,6 @@ class FFT(nn.Module):
 			self.norm_layers_1.append(LayerNorm(hidden_channels))
 
 	def forward(self, x, x_mask, g=None):
-		"""x: decoder input, h: encoder output"""
 		if g is not None:
 			g = self.cond_layer(g)
 
@@ -493,12 +461,11 @@ class FFT(nn.Module):
 				x = self.cond_pre(x)
 				cond_offset = i * 2 * self.hidden_channels
 				g_l = g[:, cond_offset:cond_offset + 2 * self.hidden_channels, :]
-				x = fused_add_tanh_sigmoid_multiply(x, g_l, torch.IntTensor([self.hidden_channels]))
+				x = fused_add_tanh_sigmoid_multiply(x, g_l, self.hidden_channels)
 
 			y = self.self_attn_layers[i](x, x, self_attn_mask)
 			y = self.drop(y)
 			x = self.norm_layers_0[i](x + y)
-
 			y = self.ffn_layers[i](x, x_mask)
 			y = self.drop(y)
 			x = self.norm_layers_1[i](x + y)
@@ -536,42 +503,35 @@ class ConvReluNorm(nn.Module):
 		self.conv_layers.append(nn.Conv1d(in_channels, hidden_channels, kernel_size, padding=kernel_size // 2))
 		self.norm_layers.append(LayerNorm(hidden_channels))
 		self.relu_drop = nn.Sequential(nn.ReLU(), nn.Dropout(p_dropout))
-
 		for _ in range(n_layers - 1):
 			self.conv_layers.append(nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size // 2))
 			self.norm_layers.append(LayerNorm(hidden_channels))
-
 		self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 		self.proj.weight.data.zero_()
 		self.proj.bias.data.zero_()
 
 	def forward(self, x, x_mask):
 		x_org = x
-
 		for i in range(self.n_layers):
 			x = self.conv_layers[i](x * x_mask)
 			x = self.norm_layers[i](x)
 			x = self.relu_drop(x)
-
 		x = x_org + self.proj(x)
 		return x * x_mask
 
 
 class DDSConv(nn.Module):
-	"""Dialted and Depth-Separable Convolution"""
 	def __init__(self, channels, kernel_size, n_layers, p_dropout=0.0):
 		super().__init__()
 		self.channels = channels
 		self.kernel_size = kernel_size
 		self.n_layers = n_layers
 		self.p_dropout = p_dropout
-
 		self.drop = nn.Dropout(p_dropout)
 		self.convs_sep = nn.ModuleList()
 		self.convs_1x1 = nn.ModuleList()
 		self.norms_1 = nn.ModuleList()
 		self.norms_2 = nn.ModuleList()
-
 		for i in range(n_layers):
 			dilation = kernel_size**i
 			padding = (kernel_size * dilation - dilation) // 2
@@ -583,7 +543,6 @@ class DDSConv(nn.Module):
 	def forward(self, x, x_mask, g=None):
 		if g is not None:
 			x = x + g
-
 		for i in range(self.n_layers):
 			y = self.convs_sep[i](x * x_mask)
 			y = self.norms_1[i](y)
@@ -593,7 +552,6 @@ class DDSConv(nn.Module):
 			y = F.gelu(y)
 			y = self.drop(y)
 			x = x + y
-
 		return x * x_mask
 
 
@@ -624,7 +582,6 @@ class WN(torch.nn.Module):
 			in_layer = torch.nn.utils.weight_norm(in_layer, name="weight")
 			self.in_layers.append(in_layer)
 
-			# Last one is not necessary
 			if i < n_layers - 1:
 				res_skip_channels = 2 * hidden_channels
 			else:
@@ -636,7 +593,6 @@ class WN(torch.nn.Module):
 
 	def forward(self, x, x_mask, g=None, **kwargs):
 		output = torch.zeros_like(x)
-		n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
 		if g is not None and self.cond_layer is not None:
 			g = self.cond_layer(g)
@@ -652,7 +608,7 @@ class WN(torch.nn.Module):
 			else:
 				g_l = torch.zeros_like(x_in)
 
-			acts = fused_add_tanh_sigmoid_multiply(x_in, g_l, n_channels_tensor)
+			acts = fused_add_tanh_sigmoid_multiply(x_in, g_l, self.hidden_channels)
 			acts = self.drop(acts)
 			res_skip_acts = self.res_skip_layers[i](acts)
 
@@ -737,7 +693,8 @@ class ResBlock2(torch.nn.Module):
 class Log(nn.Module):
 	def forward(self, x, x_mask, reverse=False, **kwargs):
 		if not reverse:
-			y = torch.log(torch.clamp_min(x, 1e-5)) * x_mask
+			min_val = torch.tensor(1e-5, dtype=x.dtype, device=x.device)
+			y = torch.log(torch.maximum(x, min_val)) * x_mask
 			logdet = torch.sum(-y, [1, 2])
 			return y, logdet
 		else:
@@ -833,18 +790,15 @@ class ConvFlow(nn.Module):
 		h = self.pre(x0)
 		h = self.convs(h, x_mask, g=g)
 		h = self.proj(h) * x_mask
-
 		b, c, t = x0.shape
-		h = h.reshape(b, c, -1, t).permute(0, 1, 3, 2)  # [b, cx?, t] -> [b, c, t, ?]
-
+		num_bins_total = self.num_bins * 3 - 1
+		h = h.view(b, c, num_bins_total, t).permute(0, 1, 3, 2)
 		unnormalized_widths = h[..., :self.num_bins] / math.sqrt(self.filter_channels)
 		unnormalized_heights = h[..., self.num_bins:2 * self.num_bins] / math.sqrt(self.filter_channels)
 		unnormalized_derivatives = h[..., 2 * self.num_bins:]
-
 		x1, logabsdet = piecewise_rational_quadratic_transform(x1, unnormalized_widths, unnormalized_heights, unnormalized_derivatives, inverse=reverse, tails="linear", tail_bound=self.tail_bound)
 		x = torch.cat([x0, x1], 1) * x_mask
 		logdet = torch.sum(logabsdet * x_mask, [1, 2])
-
 		if not reverse:
 			return x, logdet
 		else:
@@ -930,7 +884,7 @@ class StochasticDurationPredictor(nn.Module):
 		else:
 			flows = list(reversed(self.flows))
 			flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
-			z = (torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype) * noise_scale)
+			z = torch.randn_like(x[:, :2, :]) * noise_scale
 
 			for flow in flows:
 				z = flow(z, x_mask, g=x, reverse=reverse)
@@ -954,17 +908,14 @@ class DurationPredictor(nn.Module):
 		self.conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
 		self.norm_2 = LayerNorm(filter_channels)
 		self.proj = nn.Conv1d(filter_channels, 1, 1)
-
 		if gin_channels != 0:
 			self.cond = nn.Conv1d(gin_channels, in_channels, 1)
 
 	def forward(self, x, x_mask, g=None):
 		x = torch.detach(x)
-
 		if g is not None:
 			g = torch.detach(g)
 			x = x + self.cond(g)
-
 		x = self.conv_1(x * x_mask)
 		x = torch.relu(x)
 		x = self.norm_1(x)
@@ -1048,10 +999,8 @@ class TextEncoder(nn.Module):
 		x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
 		x = torch.transpose(x, 1, -1)  # [b, h, t]
 		x_mask = torch.unsqueeze(sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
-
 		x = self.encoder(x * x_mask, x_mask, g=g)
 		stats = self.proj(x) * x_mask
-
 		m, logs = torch.split(stats, self.out_channels, dim=1)
 		return x, m, logs, x_mask
 
@@ -1300,7 +1249,6 @@ class ResidualCouplingBlock(nn.Module):
 		self.n_flows = n_flows
 		self.gin_channels = gin_channels
 		self.flows = nn.ModuleList()
-
 		for i in range(n_flows):
 			self.flows.append(ResidualCouplingLayer(channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels, mean_only=True))
 			self.flows.append(Flip())
@@ -1517,7 +1465,6 @@ class SynthesizerTrn(nn.Module):
 		x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
 		z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
 		z_p = self.flow(z, y_mask, g=g)
-
 		with torch.no_grad():  # MUST BE no_grad, NOT inference_mode!
 			# Negative cross-entropy
 			s_p_sq_r = torch.exp(-2 * logs_p)  # [b, d, t]
@@ -1555,34 +1502,32 @@ class SynthesizerTrn(nn.Module):
 
 	def infer(self, x, x_lengths, sid=None, noise_scale=0.5, length_scale=1, noise_scale_w=0.5, min_period_duration=24.0):
 		"""Inference method relying on the model's native duration predictions, with an added rule to enforce a minimum duration strictly for periods (.)."""
-		with torch.autocast(device_type=x.device.type):
+		is_tracing = torch.jit.is_tracing()
+		with torch.autocast(device_type=x.device.type, enabled=not is_tracing):
 			sid = torch.LongTensor([sid]).to(x.device) if sid is not None else None
 			g = self.emb_g(sid).unsqueeze(-1) if sid is not None else None  # [b, h, 1]
+			x_tokens = x  # Store original token IDs before encoding to identify periods
+			x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)  # Text Encoder
 
-			# Store original token IDs before encoding to identify periods
-			x_tokens = x
-
-			# Text Encoder
-			x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
-
-			# Duration Prediction
-			# noise_scale_w controls the stochasticity of the duration (rhythm)
+			# Duration Prediction. The noise_scale_w controls the stochasticity of the duration (rhythm)
 			logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
 
 			# Convert log duration to linear time and apply global speed (length_scale)
 			w = torch.exp(logw) * x_mask * length_scale
 
-			# Minimum duration enforcement for periods (.)
-			seq = sequence_to_text(x_tokens[0].tolist())
-			for i, ch in enumerate(seq):
-				if ch == ".":
-					w[0, 0, i] = torch.clamp_min(w[0, 0, i], min_period_duration)
+			if '.' in _symbol_to_id:
+				period_id = _symbol_to_id['.']
+				period_mask = (x_tokens == period_id).unsqueeze(1)
+				min_pd = torch.tensor(min_period_duration, dtype=w.dtype, device=w.device)
+				w = torch.where(period_mask, torch.maximum(w, min_pd), w)
 
 			# Ceiling ensures every token has at least 1 frame of duration if w > 0
 			w_ceil = torch.ceil(w)
 
 			# Generate Alignment Path
-			y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
+			w_sum = torch.sum(w_ceil, [1, 2])
+			min_len = torch.tensor(1.0, dtype=w_sum.dtype, device=w_sum.device)
+			y_lengths = torch.maximum(w_sum, min_len).long()
 			y_mask = torch.unsqueeze(sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
 			attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
 			attn = generate_path(w_ceil, attn_mask)
@@ -1607,12 +1552,10 @@ class SynthesizerTrn(nn.Module):
 		g_src = self.emb_g(sid_src).unsqueeze(-1)
 		g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
 
-		# Extract Posterior (Audio -> Latent)
-		# We ignore the 'z' returned by enc_q because it has random noise baked in. We grab 'm_q' (mean) and 'logs_q' (variance) instead
+		# Extract Posterior (Audio -> Latent). We ignore the 'z' returned by enc_q because it has random noise baked in. We grab 'm_q' (mean) and 'logs_q' (variance) instead
 		z_dummy, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
 
-		# Create Clean Latent
-		# If noise_scale is 0, z = m_q (The most accurate representation of the audio)
+		# Create Clean Latent. If noise_scale is 0, z = m_q (The most accurate representation of the audio)
 		z_clean = (m_q + torch.randn_like(m_q) * torch.exp(logs_q) * noise_scale) * y_mask
 
 		# Source -> Prior (Remove Source Speaker traits)
@@ -1631,30 +1574,23 @@ def load_model(config_path, model_path, device="mps"):
 	hps = utils.get_hparams_from_file(config_path)
 	net_g = SynthesizerTrn(len(symbols), hps.data.n_mel_channels, hps.train.segment_size // hps.data.hop_length, n_speakers=hps.data.n_speakers, **hps.model).to(device)
 	_ = utils.load_checkpoint(model_path, net_g, None)
-
 	net_g.eval()
 	net_g.hps = hps
 	return net_g
 
 
-def export_model(config_path, model_path, output_path, device="cpu"):
-	"""
-	Export the model to ONNX in FP32 format.
-	"""
+def export_onnx_model(config_path, model_path, output_path, device="cpu"):
+	"""Export the model to ONNX in FP32 format."""
 	print("Loading model...")
 	hps = utils.get_hparams_from_file(config_path)
 	model_g = SynthesizerTrn(len(symbols), hps.data.n_mel_channels, hps.train.segment_size // hps.data.hop_length, n_speakers=hps.data.n_speakers, **hps.model).to(device)
-
 	utils.load_checkpoint(model_path, model_g, None)
 	model_g.eval()
-
-	# Ensure all parameters, model and buffers are in float32
-	model_g = model_g.float()
+	model_g = model_g.float()  # Ensure all parameters, model and buffers are in float32
 	for param in model_g.parameters():
 		param.data = param.data.float()
 	for buffer in model_g.buffers():
 		buffer.data = buffer.data.float()
-
 	model_g.forward = model_g.infer
 
 	# Prepare dummy inputs for tracing
@@ -1668,7 +1604,59 @@ def export_model(config_path, model_path, output_path, device="cpu"):
 	print("ONNX export complete.")
 
 
-def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, length_scale=1.0, min_period_duration=24.0, device="mps", stream=False, output_file=None, language="en-us", language_map=None, language_speakers=None):
+def export_coreml_model(config_path, model_path, output_path):
+	import coremltools as ct
+
+	class CleanCoreMLWrapper(nn.Module):
+		def __init__(self, model):
+			super().__init__()
+			self.model = model
+
+		def forward(self, x, x_lengths):
+			# Hardcoding the VITS params so CoreML doesn't ask for them dynamically
+			ns = torch.tensor(0.4, dtype=torch.float32)
+			ls = torch.tensor(1.0, dtype=torch.float32)
+			nsw = torch.tensor(0.4, dtype=torch.float32)
+
+			# Call the original .infer method
+			return self.model.infer(x, x_lengths, sid=0, noise_scale=ns, length_scale=ls, noise_scale_w=nsw)[0]
+
+	print("Loading PyTorch model directly...")
+	model_g = load_model(config_path, model_path, device="cpu")
+	model_g.eval()
+
+	# Wrap to clean up inputs
+	wrapped_model = CleanCoreMLWrapper(model_g)
+	wrapped_model.eval()
+
+	print("Tracing model...")
+	# Use a realistic interleaved dummy input instead of random integers! Random integers cause the flow network to predict garbage logw -> massive w -> Out Of Memory hang
+	dummy_seq = [0, 28, 0, 45, 0, 42, 0, 42, 0, 45, 0, 7, 0, 15, 0]  # Represents standard VITS phonemes
+	dummy_x = torch.LongTensor(dummy_seq).unsqueeze(0)
+	dummy_x_lengths = torch.LongTensor([dummy_x.size(1)])
+
+	# Trace the graph safely.
+	with torch.no_grad():
+		traced_model = torch.jit.trace(wrapped_model, (dummy_x, dummy_x_lengths))
+
+	print("Converting to CoreML (Dynamic Shape & FP16)...")
+	mlmodel = ct.convert(traced_model, inputs=[ct.TensorType(name="x", shape=(1, ct.RangeDim(1, 1000))), ct.TensorType(name="x_lengths", shape=(1, ))], outputs=[ct.TensorType(name="audio_output")], convert_to="mlprogram", compute_units=ct.ComputeUnit.ALL, compute_precision=ct.precision.FLOAT16)
+	mlmodel.save(output_path)
+	print(f"Success! Saved: {output_path}")
+
+
+def compress_coreml_model(modelpath="vits.mlpackage", output_path="vits-int8.mlpackage"):
+	import coremltools as ct
+	import coremltools.optimize.coreml as cto
+	model = ct.models.MLModel(modelpath)
+	print("Model loaded. Starting compression")
+	op_config = cto.OptimizationConfig(global_config=cto.OpLinearQuantizerConfig(mode="linear_symmetric"))  # Setup 8-bit linear quantization
+	compressed_model = cto.linear_quantize_weights(model, op_config)
+	compressed_model.save(output_path)
+	print(f"🎉 Success! Compressed model saved as: {output_path}")
+
+
+def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, length_scale=1.0, min_period_duration=24.0, device="mps", stream=False, output_file=None, language="en-us", language_map=None, language_speakers=None, coreml=False):
 	if language_map is None:
 		language_map = {"en-us": "en-us", "ru": "ru", "ja": "ja"}
 
@@ -1678,7 +1666,7 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 	# Split text by language
 	processed_chunks = split_and_process_text(text, language=language, max_length=300, combine=True, language_map=language_map)
 
-	# Non-Streaming
+	# Non-streaming
 	if not stream:
 		all_audio = []
 
@@ -1693,28 +1681,43 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 
 			stn_tst = cleaned_text_to_sequence(chunk)
 
-			with torch.inference_mode():
-				x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
-				x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
+			# CoreML Inference
+			if coreml:
+				x_np = np.array([stn_tst], dtype=np.int32)
+				x_lengths_np = np.array([len(stn_tst)], dtype=np.int32)
 
-				# Cleaned infer call matching exactly what SynthesizerTrn accepts
-				infer_output = model.infer(x=x_tst, x_lengths=x_tst_lengths, sid=chunk_sid, noise_scale=noise_scale, noise_scale_w=noise_scale_w, length_scale=length_scale, min_period_duration=min_period_duration)
+				predictions = model.predict({"x": x_np, "x_lengths": x_lengths_np})
 
-				# Extract audio to NumPy cleanly (OPTIMIZED: removed .data and .copy())
-				audio_tensor = infer_output[0][0, 0]
-				audio_chunk = audio_tensor.detach().cpu().float().numpy()
+				# CoreML outputs shape (1, 1, Time). Squeeze down to 1D array
+				audio_chunk = np.squeeze(predictions["audio_output"])
 
-				# Write to disk and FLUSH (Forces OS to clear kernel_task RAM)
-				if sf_file is not None:
-					sf_file.write(audio_chunk)
-					sf_file.flush()
-				else:
-					all_audio.append(audio_chunk)
+			# PyTorch Inference
+			else:
+				with torch.inference_mode():
+					x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
+					x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
 
-				# IMMEDIATELY sever PyTorch references so memory can be reclaimed naturally
-				del infer_output
-				del audio_tensor
-				del x_tst, x_tst_lengths
+					# Cleaned infer call matching exactly what SynthesizerTrn accepts
+					infer_output = model.infer(x=x_tst, x_lengths=x_tst_lengths, sid=chunk_sid, noise_scale=noise_scale, noise_scale_w=noise_scale_w, length_scale=length_scale, min_period_duration=min_period_duration)
+
+					# Extract audio to NumPy cleanly (OPTIMIZED: removed .data and .copy())
+					audio_tensor = infer_output[0][0, 0]
+					audio_chunk = audio_tensor.detach().cpu().float().numpy()
+
+					# IMMEDIATELY sever PyTorch references so memory can be reclaimed naturally
+					del infer_output
+					del audio_tensor
+					del x_tst, x_tst_lengths
+
+			# Write to disk and FLUSH (Forces OS to clear kernel_task RAM)
+			if sf_file is not None:
+				sf_file.write(audio_chunk)
+				sf_file.flush()
+			else:
+				all_audio.append(audio_chunk)
+
+			# Cleanup loop variables
+			if not coreml:
 				del audio_chunk
 
 		# Final cleanup ONLY AT THE END
@@ -1722,10 +1725,13 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 			sf_file.close()
 
 		gc.collect()
-		if device == "mps":
-			torch.mps.empty_cache()
-		elif device == "cuda":
-			torch.cuda.empty_cache()
+
+		# Only empty PyTorch caches if we actually used PyTorch
+		if not coreml:
+			if device == "mps":
+				torch.mps.empty_cache()
+			elif device == "cuda":
+				torch.cuda.empty_cache()
 
 		if sf_file is not None:
 			print("Audio generation and saving complete.")
@@ -1734,8 +1740,9 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 			final_audio = np.concatenate(all_audio)
 			return final_audio
 
+	# Streaming
 	else:
-		# Streaming
+
 		def audio_generator():
 			audio_queue = queue.Queue(maxsize=4)
 			pbar = tqdm(total=len(processed_chunks), desc="Generating audio", unit="chunk")
@@ -1748,33 +1755,47 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 						chunk_sid = language_speakers.get(chunk_language, sid)
 
 						stn_tst = cleaned_text_to_sequence(chunk)
-						with torch.inference_mode():
-							x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
-							x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
 
-							# Cleaned infer call
-							infer_output = model.infer(x=x_tst, x_lengths=x_tst_lengths, sid=chunk_sid, noise_scale=noise_scale, noise_scale_w=noise_scale_w, length_scale=length_scale, min_period_duration=min_period_duration)
+						# CoreML Inference
+						if coreml:
+							x_np = np.array([stn_tst], dtype=np.int32)
+							x_lengths_np = np.array([len(stn_tst)], dtype=np.int32)
 
-							# Extract audio cleanly
-							audio_tensor = infer_output[0][0, 0]
-							audio_chunk = audio_tensor.detach().cpu().float().numpy()
+							predictions = model.predict({"x": x_np, "x_lengths": x_lengths_np})
+							audio_chunk = np.squeeze(predictions["audio_output"])
+
 							audio_queue.put(audio_chunk)
 							pbar.update(1)
 
-							del infer_output
-							del audio_tensor
-							del x_tst, x_tst_lengths
-							del audio_chunk
+						# PyTorch Inference
+						else:
+							with torch.inference_mode():
+								x_tst = torch.LongTensor(stn_tst).to(device).unsqueeze(0)
+								x_tst_lengths = torch.LongTensor([len(stn_tst)]).to(device)
+
+								# Cleaned infer call
+								infer_output = model.infer(x=x_tst, x_lengths=x_tst_lengths, sid=chunk_sid, noise_scale=noise_scale, noise_scale_w=noise_scale_w, length_scale=length_scale, min_period_duration=min_period_duration)
+
+								# Extract audio cleanly
+								audio_tensor = infer_output[0][0, 0]
+								audio_chunk = audio_tensor.detach().cpu().float().numpy()
+								audio_queue.put(audio_chunk)
+								pbar.update(1)
+
+								del infer_output
+								del audio_tensor
+								del x_tst, x_tst_lengths
+								del audio_chunk
 
 				except Exception as e:
 					print(f"Error in generation worker: {e}")
 				finally:
-					# Final cleanup ONLY AT THE END
-					gc.collect()
-					if device == "mps":
-						torch.mps.empty_cache()
-					elif device == "cuda":
-						torch.cuda.empty_cache()
+					gc.collect()  # Final cleanup ONLY AT THE END
+					if not coreml:
+						if device == "mps":
+							torch.mps.empty_cache()
+						elif device == "cuda":
+							torch.cuda.empty_cache()
 					audio_queue.put(None)
 
 			worker_thread = threading.Thread(target=generate_audio_worker, daemon=True)
@@ -1794,10 +1815,96 @@ def inference(model=None, text=None, sid=0, noise_scale=0.4, noise_scale_w=0.4, 
 		return audio_generator()
 
 
-def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_id=0, target_speaker_id=1, device="mps", hps=None, pitch_shift=0):
-	from .utils import HParams
+def audiobook_creation(series_name="Title", volume_num="01", author=None, narrator="Yuna Ai", genre="Action", year="2026", language="eng", publisher="Yuna Audio", cover_art_file=None, files_before_chapters=None, files_after_chapters=None):
+	"""Combines WAV files into a chapterized M4B audiobook using FFmpeg."""
+	book_name = f"{series_name} Vol {volume_num}" if volume_num else series_name
+	meta_sort_title = f"{series_name} {volume_num}" if volume_num else series_name
+	source_path = Path(book_name)
+	output_filename = f"{book_name}.m4b"
+	files_before = files_before_chapters or []
+	files_after = files_after_chapters or []
+	wav_files = list(source_path.glob("*.wav"))
+	if not wav_files:
+		print("No .wav files found in directory!")
+		return
 
-	# 2. Robust Config Resolution
+	# Custom Sorting Logic
+	def natural_sort_key(s):
+		return [int(t) if t.isdigit() else t.lower() for t in re.split(r"([0-9]+)", s.name)]
+
+	pre_list = sorted([w for w in wav_files if w.stem in files_before], key=lambda x: files_before.index(x.stem))
+	post_list = sorted([w for w in wav_files if w.stem in files_after], key=lambda x: files_after.index(x.stem))
+	main_list = sorted([w for w in wav_files if w.stem not in files_before and w.stem not in files_after], key=natural_sort_key)
+	sorted_files = pre_list + main_list + post_list
+	metadata_content = [";FFMETADATA1", f"title={book_name}", f"album={book_name}", f"artist={author}", f"album_artist={author}", f"composer={narrator}", f"genre={genre}", f"date={year}", f"language={language}", f"copyright=© {year} {author}", f"publisher={publisher}", f"sort_name={meta_sort_title}", f"grouping={series_name}"]
+	current_time_sec = 0.0
+	concat_entries = []
+	special_sections = ["prologue", "epilogue", "interlude", "introduction", "foreword", "afterword", "credits", "appendix"]
+
+	for wav in sorted_files:
+		print(f"Analyzing: {wav.name}")
+
+		# Extract duration via ffprobe
+		probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(wav)]
+		duration_sec = float(subprocess.run(probe_cmd, stdout=subprocess.PIPE, text=True).stdout.strip())
+		end_time_sec = current_time_sec + duration_sec
+
+		# Determine Chapter Title
+		stem = wav.stem
+		if stem in files_before or stem in files_after:
+			chapter_title = stem
+		elif any(k in stem.lower() for k in special_sections):
+			chapter_title = stem.replace("-", " ").replace("_", " ").title()
+		elif "-" in stem:
+			parts = stem.split("-")
+			chapter_title = f"Chapter {parts[0]} - End" if parts[1].lower() == "end" else f"Chapters {parts[0]}-{parts[1]}"
+		else:
+			chapter_title = f"Chapter {stem}"
+
+		# Write metadata strings using millisecond conversions
+		metadata_content.extend(["[CHAPTER]", "TIMEBASE=1/1000", f"START={int(current_time_sec * 1000)}", f"END={int(end_time_sec * 1000)}", f"title={chapter_title}"])
+		safe_path = str(wav.absolute()).replace("'", "'\\''")
+		concat_entries.append(f"file '{safe_path}'")
+		current_time_sec = end_time_sec
+
+	# Build Working Temp Files
+	concat_list_path = source_path / "concat_list.txt"
+	ffmetadata_path = source_path / "ffmetadata.txt"
+
+	with open(concat_list_path, "w", encoding="utf-8") as f:
+		f.write("\n".join(concat_entries))
+	with open(ffmetadata_path, "w", encoding="utf-8") as f:
+		f.write("\n".join(metadata_content))
+
+	# Execute FFmpeg Stitching
+	print("Starting conversion and merging...")
+	cmd = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", str(concat_list_path), "-i", str(ffmetadata_path)]
+
+	if cover_art_file and Path(cover_art_file).exists():
+		cmd.extend(["-i", cover_art_file])
+	else:
+		print(f"Warning: Cover art not found or skipped.")
+
+	cmd.extend(["-map_metadata", "1", "-map", "0:a"])
+	if cover_art_file and Path(cover_art_file).exists():
+		cmd.extend(["-map", "2", "-disposition:v", "attached_pic"])
+
+	# Enforce lossless ALAC at 48 kHz
+	cmd.extend(["-c:a", "alac", "-ar", "48000", "-c:v", "copy", output_filename])
+
+	try:
+		subprocess.run(cmd, check=True)
+		print(f"\nSUCCESS! Created: {output_filename}")
+	except subprocess.CalledProcessError:
+		print("\nError: FFmpeg failed to process the file.")
+	finally:
+		# Guaranteed cleanup of working txt files
+		if concat_list_path.exists(): os.remove(concat_list_path)
+		if ffmetadata_path.exists(): os.remove(ffmetadata_path)
+
+
+def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_id=0, target_speaker_id=1, device="mps", hps=None, pitch_shift=0):
+	# Robust Config Resolution
 	if hasattr(model, "hps"):
 		config = model.hps
 	elif hps is not None:
@@ -1810,16 +1917,13 @@ def voice_conversion_inference(model=None, source_wav_path=None, source_speaker_
 
 	data_config = config.data
 	sampling_rate = data_config.sampling_rate
-
-	# Load Audio (Librosa loads as float32 in range -1 to 1)
-	audio, sr = librosa.load(source_wav_path, sr=sampling_rate)
+	audio, sr = librosa.load(source_wav_path, sr=sampling_rate)  # Load Audio (Librosa loads as float32 in range -1 to 1)
 
 	# Pitch Shift
 	if pitch_shift != 0:
 		audio = librosa.effects.pitch_shift(audio, sr=sr, n_steps=pitch_shift, bins_per_octave=12, res_type="kaiser_best")
 
-	# Prepare for Torch
-	# Librosa audio is ALREADY normalized [-1, 1]. Do NOT divide by max_wav_value (32768) again.
+	# Prepare for Torch. Librosa audio is ALREADY normalized [-1, 1]. Do NOT divide by max_wav_value (32768) again.
 	audio = torch.FloatTensor(audio.astype(np.float32))
 	audio_norm = audio.unsqueeze(0)
 

@@ -131,8 +131,10 @@ aiflow/models/kokoro/logs/*
 aiflow/models/kokoro/datasets/*
 !aiflow/models/kokoro/datasets/dataset_sample.json
 aiflow/models/kokoro/emotion_plots/*
-aiflow/models/hanasu/monotonic_align/core.c
+aiflow/models/vits/monotonic_align/core.c
 aiflow/models/kokoro/*
 aiflow/models/uta/*
 aiflow/models/yuna_pitch/*
 .DS_Store
+latest.pt
+core.c

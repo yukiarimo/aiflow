@@ -91,7 +91,6 @@ def japanese_to_ipa2(text):
 	text = japanese_to_romaji_with_accent(text).replace('...', '…')
 	text = get_real_sokuon(text)
 	text = get_real_hatsuon(text)
-
 	for regex, replacement in _romaji_to_ipa:
 		text = re.sub(regex, replacement, text)
 	return text
@@ -300,15 +299,12 @@ def text_cleaners(text, language="en-us", language_map=None):
 	return phonemes.strip()
 
 
-# PIPELINE & HELPERS
 def split_sentences(text):
 	text = text.strip()
 	text = re.sub(r"[‘’`´]", "'", text)
 	text = re.sub(r"[“”«»‟]", '"', text)
-
 	text = expand_abbreviations(text)
 	text = clean_punctuation(text)
-
 	text = re.sub(r"\n+", ". ", text)
 
 	# Replace formatting brackets with commas
@@ -418,7 +414,6 @@ def text_to_phonemes_raw(text, language="en-us", language_map=None):
 	if language_map is None: language_map = {"en-us": "en-us", "ru": "ru", "ja": "ja"}
 	lang = language_map.get(language, language)
 	text = text.strip()
-
 	if lang == "en-us":
 		phonemes = backend.phonemize([text], strip=False)[0]
 	elif lang == "ru":

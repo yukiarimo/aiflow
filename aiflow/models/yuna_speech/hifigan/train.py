@@ -10,8 +10,8 @@ import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from models import HifiganGenerator, HifiganDiscriminator, feature_loss, discriminator_loss, generator_loss
-from utils import MelDataset, LogMelSpectrogram, load_checkpoint, save_checkpoint, plot_spectrogram
+from .models import HifiganGenerator, HifiganDiscriminator, feature_loss, discriminator_loss, generator_loss
+from .utils import MelDataset, LogMelSpectrogram, load_checkpoint, save_checkpoint, plot_spectrogram
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -19,8 +19,8 @@ torch.backends.cudnn.benchmark = True
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 BATCH_SIZE = 18
-SEGMENT_LENGTH = 16384
-HOP_LENGTH = 128
+SEGMENT_LENGTH = 96000
+HOP_LENGTH = 512
 SAMPLE_RATE = 48000
 BASE_LEARNING_RATE = 2e-4
 FINETUNE_LEARNING_RATE = 1e-4
@@ -75,7 +75,6 @@ def train_model(rank, world_size, args):
 
 	n_epochs = EPOCHS
 	start_epoch = global_step // len(train_loader) + 1
-
 	logger.info("**" * 40)
 	logger.info(f"batch size: {BATCH_SIZE}")
 	logger.info(f"iterations per epoch: {len(train_loader)}")

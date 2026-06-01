@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import remove_weight_norm, weight_norm
-from utils import get_padding
+from .utils import get_padding
 import torchaudio
 from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 
@@ -10,7 +10,7 @@ LRELU_SLOPE = 0.1
 
 
 class HifiganGenerator(torch.nn.Module):
-	def __init__(self, in_channels=128, resblock_dilation_sizes=((1, 3, 5), (1, 3, 5), (1, 3, 5)), resblock_kernel_sizes=(3, 7, 11), upsample_kernel_sizes=(20, 8, 4, 4), upsample_initial_channel=512, upsample_factors=(8, 4, 2, 2), inference_padding=5, sample_rate=48000):
+	def __init__(self, in_channels=128, resblock_dilation_sizes=((1, 3, 5), (1, 3, 5), (1, 3, 5)), resblock_kernel_sizes=(3, 7, 11), upsample_kernel_sizes=(20, 20, 8, 4), upsample_initial_channel=512, upsample_factors=(8, 8, 4, 2), inference_padding=5, sample_rate=48000):
 		super().__init__()
 		self.inference_padding = inference_padding
 		self.num_kernels = len(resblock_kernel_sizes)
@@ -93,18 +93,15 @@ class PeriodDiscriminator(torch.nn.Module):
 	def forward(self, x):
 		feat = []
 		b, c, t = x.shape
-
 		if t % self.period != 0:
 			n_pad = self.period - (t % self.period)
 			x = F.pad(x, (0, n_pad), "reflect")
 			t = t + n_pad
-
 		x = x.view(b, c, t // self.period, self.period)
 		for l in self.convs:
 			x = l(x)
 			x = F.leaky_relu(x, LRELU_SLOPE)
 			feat.append(x)
-
 		x = self.conv_post(x)
 		feat.append(x)
 		x = torch.flatten(x, 1, -1)
@@ -119,7 +116,6 @@ class MultiPeriodDiscriminator(torch.nn.Module):
 	def forward(self, x):
 		scores = []
 		feats = []
-
 		for d in self.discriminators:
 			score, feat = d(x)
 			scores.append(score)
@@ -136,12 +132,10 @@ class ScaleDiscriminator(torch.nn.Module):
 
 	def forward(self, x):
 		feat = []
-
 		for l in self.convs:
 			x = l(x)
 			x = F.leaky_relu(x, LRELU_SLOPE)
 			feat.append(x)
-
 		x = self.conv_post(x)
 		feat.append(x)
 		x = torch.flatten(x, 1, -1)
@@ -157,7 +151,6 @@ class MultiScaleDiscriminator(torch.nn.Module):
 	def forward(self, x):
 		scores = []
 		feats = []
-
 		for i, d in enumerate(self.discriminators):
 			if i != 0:
 				x = self.meanpools[i - 1](x)
@@ -191,7 +184,6 @@ def discriminator_loss(real, generated):
 	loss = 0
 	real_losses = []
 	generated_losses = []
-
 	for r, g in zip(real, generated):
 		r_loss = torch.mean((1 - r)**2)
 		g_loss = torch.mean(g**2)
@@ -204,7 +196,6 @@ def discriminator_loss(real, generated):
 def generator_loss(discriminator_outputs):
 	loss = 0
 	generator_losses = []
-
 	for x in discriminator_outputs:
 		l = torch.mean((1 - x)**2)
 		generator_losses.append(l)

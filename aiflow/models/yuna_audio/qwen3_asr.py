@@ -4,9 +4,14 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from tqdm import tqdm
-from .config import STTOutput
+from .config import STTOutput, ModelConfig
 from .utils import load_audio
-from .qwen3_forced_aligner import ForcedAlignerModel, ForcedAlignerConfig
+# NOTE: do NOT import qwen3_forced_aligner at module load time — qwen3_forced_aligner
+# imports `AudioEncoder` / `TextModel` / `_get_feat_extract_output_lengths` from this
+# file, so a top-level import here creates a circular import that fails on the first
+# fresh interpreter (qwen3_asr is only partially populated when the aligner tries to
+# read those symbols). The import is performed lazily inside `Model.__init__` /
+# `Model.sanitize`, which is the only place these symbols are actually used.
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from .utils import load_audio
 from mlx_lm.generate import generate_step
@@ -442,8 +447,12 @@ class Qwen3ASRModel(nn.Module):
 			if len(audio_indices) > 0 and audio_features.shape[0] > 0:
 				num_to_replace = min(len(audio_indices), audio_features.shape[0])
 				flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
-				replace_indices = mx.array(audio_indices[:num_to_replace])
-				flat_embeds = flat_embeds.at[replace_indices].set(audio_features[:num_to_replace])
+				# Audio placeholder tokens are always emitted as a contiguous run by the
+				# tokenizer (`"<|audio_pad|>" * num_audio_tokens`), so we can splice the
+				# audio rows in with concat — pure MLX, no `.at[..].set()` needed (older
+				# MLX builds don't ship `set` on `ArrayAt`).
+				start = int(audio_indices[0])
+				flat_embeds = mx.concatenate([flat_embeds[:start], audio_features[:num_to_replace], flat_embeds[start + num_to_replace:]], axis=0)
 				inputs_embeds = flat_embeds.reshape(batch_size, seq_len, hidden_dim)
 
 		return inputs_embeds
@@ -477,8 +486,10 @@ class Qwen3ASRModel(nn.Module):
 				if len(audio_indices) > 0 and audio_features.shape[0] > 0:
 					num_to_replace = min(len(audio_indices), audio_features.shape[0])
 					flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
-					replace_indices = mx.array(audio_indices[:num_to_replace])
-					flat_embeds = flat_embeds.at[replace_indices].set(audio_features[:num_to_replace])
+					# See _build_inputs_embeds — splice the contiguous audio block via concat
+					# instead of `.at[].set()` (not present on older MLX `ArrayAt`).
+					start = int(audio_indices[0])
+					flat_embeds = mx.concatenate([flat_embeds[:start], audio_features[:num_to_replace], flat_embeds[start + num_to_replace:]], axis=0)
 					inputs_embeds = flat_embeds.reshape(batch_size, seq_len, hidden_dim)
 
 		hidden_states = self.model(inputs_embeds=inputs_embeds, cache=cache)
@@ -776,6 +787,8 @@ class Model:
 	_FORCED_ALIGNER_MAX_CLASSES = 10000
 
 	def __init__(self, config):
+		# Lazy import to break the qwen3_asr <-> qwen3_forced_aligner circular dep.
+		from .qwen3_forced_aligner import ForcedAlignerModel, ForcedAlignerConfig
 		is_aligner = (isinstance(config, ForcedAlignerConfig) or getattr(config, "model_type", "") == self._FORCED_ALIGNER_TYPE)
 		self._model = (ForcedAlignerModel(config) if is_aligner else Qwen3ASRModel(config))
 		self.config = self._model.config
@@ -805,6 +818,8 @@ class Model:
 	@classmethod
 	def sanitize(cls, weights):
 		if cls._is_forced_aligner_weights(weights):
+			# Lazy import to break the qwen3_asr <-> qwen3_forced_aligner circular dep.
+			from .qwen3_forced_aligner import ForcedAlignerModel
 			return ForcedAlignerModel.sanitize(weights)
 		return Qwen3ASRModel.sanitize(weights)
 

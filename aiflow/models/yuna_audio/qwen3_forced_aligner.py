@@ -348,10 +348,11 @@ class ForcedAlignerModel(nn.Module):
 				if len(audio_indices) > 0 and audio_features.shape[0] > 0:
 					num_to_replace = min(len(audio_indices), audio_features.shape[0])
 					flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
-
-					replace_indices = mx.array(audio_indices[:num_to_replace])
-					flat_embeds = flat_embeds.at[replace_indices].set(audio_features[:num_to_replace])
-
+					# Audio placeholder tokens form a single contiguous run, so splice the
+					# audio rows in via concat — works on every MLX version (older builds
+					# don't ship `.at[..].set()` on `ArrayAt`).
+					start = int(audio_indices[0])
+					flat_embeds = mx.concatenate([flat_embeds[:start], audio_features[:num_to_replace], flat_embeds[start + num_to_replace:]], axis=0)
 					inputs_embeds = flat_embeds.reshape(batch_size, seq_len, hidden_dim)
 
 		hidden_states = self.model(inputs_embeds=inputs_embeds, cache=None)

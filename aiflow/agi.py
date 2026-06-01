@@ -28,12 +28,16 @@ def load_conditional_imports(config):
 		globals()["audio_read"] = audio_read
 		globals()["resample_audio"] = resample_audio
 
-	if config["server"]["yuna_speech_mode"] == "hanasu":
-		from aiflow.models.hanasu.models import inference as inference_hanasu
-		from aiflow.models.hanasu.models import load_model as load_model_hanasu
+	if config["server"]["yuna_speech_mode"] == "vits":
+		if config["server"]["yuna_speech_model"][2] == "coreml":
+			import coremltools as ct
+			globals()["ct"] = ct
 
-		globals()["inference_hanasu"] = inference_hanasu
-		globals()["load_model_hanasu"] = load_model_hanasu
+		from aiflow.models.vits.models import inference as inference_vits
+		from aiflow.models.vits.models import load_model as load_model_vits
+
+		globals()["inference_vits"] = inference_vits
+		globals()["load_model_vits"] = load_model_vits
 
 
 class AGIWorker:
@@ -47,14 +51,17 @@ class AGIWorker:
 
 	def get_history_text(self, chat_history, text, useHistory, yunaConfig, image_paths, mode="chat"):
 		all_image_paths = []
-
-		if useHistory is False:
-			return text or "", all_image_paths
-
 		history_str = ""
+
 		if chat_history:
 			for m in chat_history:
-				role = "yuki" if m["name"].lower() == "yuki" else "yuna"
+				name_lower = m["name"].lower()
+				if name_lower == "yuki":
+					role = "yuki"
+				elif name_lower == "himitsu":
+					role = "himitsu"
+				else:
+					role = "yuna"
 				message_content = m.get("text", "")
 				image_count = 0
 
@@ -66,8 +73,9 @@ class AGIWorker:
 								image_count += 1
 						elif isinstance(attachment, dict):
 							if attachment.get("type") == "text" and attachment.get("content"):
-								if "<data>" not in str(message_content):
-									message_content = (f"{message_content}<data>{attachment['content']}</data>")
+								block = f"<data>{attachment['content']}</data>"
+								if block not in str(message_content):
+									message_content = f"{message_content}{block}"
 							elif attachment.get("type") == "image":
 								img_val = attachment.get("path") or attachment.get("content")
 								if img_val and (img_val.startswith("data:image/") or os.path.exists(img_val.lstrip("/"))):
@@ -75,45 +83,52 @@ class AGIWorker:
 									image_count += 1
 
 				if role == "yuki":
-					history_str += f"<{role}>{message_content}{'<|vision_start|><|image_pad|><|vision_end|>' * image_count}</{role}>\n"
+					image_data = ""
+					if image_count > 0:
+						image_data = f"<data>{'<|vision_start|><|image_pad|><|vision_end|>' * image_count}</data>"
+					history_str += f"<yuki>{message_content}{image_data}</yuki>\n"
+				elif role == "himitsu":
+					history_str += f"<himitsu>{message_content}</himitsu>\n"
 				else:
-					history_str += f"<{role}>{message_content}</{role}>\n"
+					history_str += f"<yuna>{message_content}</yuna>\n"
 
 		if mode == "extend":
-			# Fix extending: cleanly strip the closing tag from Yuna's last message
-			if history_str.strip().endswith("</yuna>"):
-				history_str = history_str.strip()[:-7]
-			return history_str, all_image_paths
+			# Strip Yuna's last closing tag so the model continues her message
+			stripped = history_str.rstrip()
+			if stripped.endswith("</yuna>"):
+				stripped = stripped[:-len("</yuna>")]
+			return stripped, all_image_paths
 
-		elif mode == "second_yuna":
-			# Fix consecutive message: history is enclosed, just force new Yuna opening tag
-			return f"{history_str.strip()}\n<yuna>", all_image_paths
+		if mode == "second_yuna":
+			# Open a fresh <yuna> turn so she sends a consecutive message
+			return f"{history_str}<yuna>", all_image_paths
 
-		# Prevent duplicate <yuki> tags if frontend already pushed the prompt into chat_history
+		# Chat mode: avoid duplicating the user turn if it is already the tail of history
 		current_prompt = text or ""
 		already_appended = False
 
-		if chat_history and len(chat_history) > 0:
+		if chat_history:
 			last_msg = chat_history[-1]
 			l_role = "yuki" if last_msg.get("name", "").lower() == "yuki" else "yuna"
 			if l_role == "yuki" and last_msg.get("text", "") == current_prompt:
 				already_appended = True
 
 		if already_appended:
-			final = f"{history_str}<yuna>"
-		else:
-			current_image_count = len(image_paths or [])
-			all_image_paths.extend(image_paths or [])
-			final = f"{history_str}<yuki>{current_prompt}{'<|vision_start|><|image_pad|><|vision_end|>' * current_image_count}</yuki>\n<yuna>"
+			return f"{history_str}<yuna>", all_image_paths
 
-		return final, all_image_paths
+		current_image_count = len(image_paths or [])
+		all_image_paths.extend(image_paths or [])
+		image_data = ""
+		if current_image_count > 0:
+			image_data = f"<data>{'<|vision_start|><|image_pad|><|vision_end|>' * current_image_count}</data>"
+		return f"{history_str}<yuki>{current_prompt}{image_data}</yuki>\n<yuna>", all_image_paths
 
 	def generate_text(self, text=None, aibo=None, chat_history=None, useHistory=True, yunaConfig=None, image_paths=None, append_current_user=True, continue_from=None, mode="chat", attachments=None):
 		if yunaConfig is None:
 			yunaConfig = self.config
 		self.config = yunaConfig
 
-		# --- PROCESS ATTACHMENTS (TEXT) ---
+		# Process attachments (text only)
 		if attachments:
 			data_blocks = ""
 			for att in attachments:
@@ -122,7 +137,7 @@ class AGIWorker:
 			if data_blocks:
 				text = f"{text}{data_blocks}" if text else data_blocks
 
-		# --- PARSE DB SYS FILES ---
+		# Parse DB files (memory -> shujinko -> aibo, in this exact order)
 		sys_tags = ""
 		for tag in ["memory", "shujinko", "aibo"]:
 			filepath = f"db/{tag}.txt"
@@ -130,30 +145,43 @@ class AGIWorker:
 				with open(filepath, "r", encoding="utf-8") as f:
 					content = f.read().strip()
 					if content:
-						# No interior newlines per instruction
 						sys_tags += f"<{tag}>{content}</{tag}>\n"
 
-		# --- BOS TOKEN HANDLING ---
 		bos_token = yunaConfig["yuna"]["bos"][0] if yunaConfig["yuna"]["bos"][1] else ""
-
-		# --- MODE HANDLING ---
+		bos_prefix = f"{bos_token}\n" if bos_token else ""
 		all_image_paths = []
 		final_prompt = ""
 		stop_tokens = yunaConfig["yuna"]["stop"]
 		cache_file = None
 
 		if mode == "naked":
+			# Naked: <|endoftext|>{text} (no newline, no tags, no history)
 			cache_file = "db/cache_naked.safetensors"
-			final_prompt = f"{bos_token}\n{text}"
+			final_prompt = f"{bos_token}{text or ''}"
 			if image_paths:
 				all_image_paths = image_paths
 			stop_tokens = []
 
 		elif mode == "loli":
+			# Loli Connect: pre-prompt written by the user (already contains <aibo>, <dialog>, etc.)
 			cache_file = "db/cache_loli.safetensors"
-			final_prompt = f"{bos_token}\n{text}"
+			final_prompt = f"{bos_prefix}{text or ''}"
 			if image_paths:
 				all_image_paths = image_paths
+
+		elif mode == "himitsu":
+			# Himitsu mode: same prompt shape as `loli` (caller provides the
+			# fully-baked preset with chat context already spliced in), but with
+			# tweaked stop tokens so Himitsu can actually *emit* an `<action>`
+			# tag (it must be removed from stops) and so generation halts at
+			# `</action>` (to dispatch the action) or `</himitsu>` (her wrap-up).
+			cache_file = "db/cache_himitsu.safetensors"
+			final_prompt = f"{bos_prefix}{text or ''}"
+			if image_paths:
+				all_image_paths = image_paths
+			stop_tokens = [s for s in stop_tokens if s != "<action>"]
+			if "</himitsu>" not in stop_tokens:
+				stop_tokens = stop_tokens + ["</himitsu>"]
 
 		elif mode in ["chat", "extend", "second_yuna"]:
 			cache_file = "db/cache_chat.safetensors"
@@ -162,12 +190,12 @@ class AGIWorker:
 			if continue_from:
 				final_prompt += continue_from
 
-			final_prompt = f"{bos_token}\n{sys_tags}<dialog>\n{final_prompt}"
+			# <|endoftext|>\n<memory>...</memory>\n<shujinko>...</shujinko>\n<aibo>...</aibo>\n<dialog>\n{...}
+			final_prompt = f"{bos_prefix}{sys_tags}<dialog>\n{final_prompt}"
 
-		# --- EXECUTION ---
+		# Run
 		mode_backend = self.config["server"]["yuna_text_mode"]
 		print(f"Generating Mode: {mode}, Prompt Length: {len(final_prompt)}")
-
 		kwargs_all = {"max_tokens": yunaConfig["yuna"]["max_new_tokens"], "temperature": yunaConfig["yuna"]["temperature"], "top_p": yunaConfig["yuna"]["top_p"], "top_k": yunaConfig["yuna"]["top_k"], "repetition_penalty": yunaConfig["yuna"]["repetition_penalty"], "repetition_context_size": 4096, "stop_strings": stop_tokens, }
 
 		if mode_backend == "yuna_vlm":
@@ -208,11 +236,14 @@ class AGIWorker:
 			self.audio_model = load_yuna_audio_model(self.config["server"]["yuna_audio_model"])
 
 	def load_voice_model(self):
-		if self.config["server"]["yuna_speech_mode"] == "hanasu":
-			self.voice_model = load_model_hanasu(config_path=self.config["server"]["yuna_speech_model"][0], model_path=self.config["server"]["yuna_speech_model"][1])
-			with torch.inference_mode():
-				self.voice_model.dec.remove_weight_norm()
-			self.voice_model.eval()
+		if self.config["server"]["yuna_speech_mode"] == "vits":
+			if self.config["server"]["yuna_speech_model"][2] == "torch":
+				self.voice_model = load_model_vits(config_path=self.config["server"]["yuna_speech_model"][0], model_path=self.config["server"]["yuna_speech_model"][1])
+				with torch.inference_mode():
+					self.voice_model.dec.remove_weight_norm()
+				self.voice_model.eval()
+			if self.config["server"]["yuna_speech_model"][2] == "coreml":
+				self.voice_model = ct.models.MLModel(self.config["server"]["yuna_speech_model"][1], compute_units=ct.ComputeUnit.CPU_AND_NE)
 
 	def load_text_model(self):
 		if self.config["server"]["yuna_text_mode"] == "yuna_vlm":
@@ -221,21 +252,37 @@ class AGIWorker:
 	def export_audio(self, input_file, output_filename):
 		AudioSegment.from_file(input_file).export(output_filename, format="mp3")
 
-	def transcribe_audio(self, audio_data):
-		# If the input is in-memory bytes from Flask
+	def _prepare_audio_for_model(self, audio_data):
+		"""Decode raw upload bytes / resample to the model's sample rate, return an mx.array."""
 		if isinstance(audio_data, bytes):
-			# Decode bytes via FFmpeg pipe:0 (no disk write)
 			samples, orig_sr = audio_read(audio_data)
-
-			# Qwen3/Whisper ASR models require 16kHz
-			target_sr = getattr(self.audio_model, 'sample_rate', 16000)
+			target_sr = getattr(self.audio_model, "sample_rate", 16000)
 			if orig_sr != target_sr:
 				samples = resample_audio(samples, orig_sr, target_sr)
+			return mx.array(samples, dtype=mx.float32)
+		return audio_data
 
-			# Convert to an MLX array. This smartly bypasses the filepath validation checks inside the model's generate() function.
-			audio_data = mx.array(samples, dtype=mx.float32)
+	@staticmethod
+	def _auto_max_tokens(audio_samples, sample_rate=16000, min_tokens=8192, tokens_per_sec=12):
+		"""Scale max_tokens to the audio duration so long lectures aren't truncated. Qwen3-ASR emits ~5–8 BPE tokens/sec of speech; we budget 12/s for safety."""
+		try:
+			duration_sec = float(audio_samples.shape[0]) / float(sample_rate)
+		except Exception:
+			return min_tokens
+		return max(min_tokens, int(duration_sec * tokens_per_sec))
 
-		return self.audio_model.generate(audio_data).text.strip()
+	def transcribe_audio(self, audio_data, chunk_duration=600.0):
+		"""Blocking transcription. Returns the full text."""
+		audio_data = self._prepare_audio_for_model(audio_data)
+		max_tokens = self._auto_max_tokens(audio_data)
+		return self.audio_model.generate(audio_data, max_tokens=max_tokens, chunk_duration=chunk_duration).text.strip()
+
+	def transcribe_audio_stream(self, audio_data, chunk_duration=600.0):
+		"""Streaming transcription. Yields StreamingResult objects token-by-token,
+		including a final result with `is_final=True` at the end of the last chunk."""
+		audio_data = self._prepare_audio_for_model(audio_data)
+		max_tokens = self._auto_max_tokens(audio_data)
+		return self.audio_model.generate(audio_data, stream=True, max_tokens=max_tokens, chunk_duration=chunk_duration)
 
 	def speak_text(self, text, output_filename=None):
 		output_filename = f"db/{uuid.uuid4()}.m4a"
@@ -254,10 +301,11 @@ class AGIWorker:
 			os.remove("static/audio/temp.aiff")
 			return output_filename, None
 
-		elif mode == "hanasu":
+		elif mode == "vits":
 			if not hasattr(self, "voice_model") or self.voice_model is None:
 				self.load_voice_model()
-			result = inference_hanasu(model=self.voice_model, text=text, device="mps", stream=False)
+			is_coreml = self.config["server"]["yuna_speech_model"][2] == "coreml"
+			result = inference_vits(model=self.voice_model, text=text, device="mps", stream=False, coreml=is_coreml)
 			wav_io = io.BytesIO()
 			sf.write(wav_io, result, 48000, format='WAV')
 			wav_b64 = base64.b64encode(wav_io.getvalue()).decode('utf-8')

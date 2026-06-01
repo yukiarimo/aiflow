@@ -1,0 +1,78 @@
+{
+	"project": {
+		"name": "HanasuTTS",
+		"seed": 8
+	},
+	"dataset": {
+		"filelist_path": "filelist.txt",
+		"val_filelist_path": null,
+		"cache_dir": "data/cache/hanasu_48k",
+		"validation_ratio": 0.02,
+		"limit": null,
+		"percent": null,
+		"min_audio_seconds": 0.25,
+		"max_audio_seconds": 20.0,
+		"max_tokens": 1024,
+		"speakers": {
+			"Yuna": 0,
+			"Yuki": 1
+		},
+		"languages": {
+			"en-us": 0,
+			"ja": 1,
+			"ru": 2
+		}
+	},
+	"audio": {
+		"sample_rate": 48000,
+		"n_fft": 2048,
+		"hop_length": 512,
+		"win_length": 2048,
+		"n_mels": 128,
+		"f_min": 100.0,
+		"f_max": 15000.0,
+		"power": 1.0,
+		"padding": "center",
+		"clip_val": 1e-7,
+		"gain_db": -3.0
+	},
+	"model": {
+		"type": "hanasu_tts",
+		"hidden_size": 256,
+		"num_speakers": 2,
+		"num_languages": 3,
+		"reduction_factor": 4,
+		"encoder_conv_layers": 3,
+		"encoder_dropout": 0.15,
+		"prenet_sizes": [256, 128],
+		"attention_dim": 128,
+		"decoder_dim": 512,
+		"location_channels": 32,
+		"location_kernel_size": 31,
+		"postnet_channels": 512,
+		"postnet_layers": 5,
+		"dropout": 0.5,
+		"postnet_dropout": 0.5,
+		"max_decoder_steps": 1200,
+		"stop_threshold": 0.55,
+		"attention_window": 12
+	},
+	"training": {
+		"batch_size": 16,
+		"epochs": 1000000,
+		"learning_rate": 0.001,
+		"weight_decay": 0.000001,
+		"grad_clip": 1.0,
+		"log_interval": 20,
+		"val_interval": 500,
+		"save_interval": 1000,
+		"num_workers": 4,
+		"checkpoints_dir": "checkpoints",
+		"runs_dir": "runs",
+		"resume": null,
+		"mel_loss_weight": 1.0,
+		"stop_loss_weight": 0.5,
+		"guided_attention_weight": 1.0,
+		"guided_attention_sigma": 0.4
+	}
+}

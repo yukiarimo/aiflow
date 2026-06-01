@@ -71,10 +71,10 @@ def load_checkpoint(load_path, generator, discriminator, optimizer_generator, op
 class LogMelSpectrogram(torch.nn.Module):
 	def __init__(self):
 		super().__init__()
-		self.melspctrogram = transforms.MelSpectrogram(sample_rate=48000, n_fft=1024, win_length=1024, hop_length=128, center=False, power=1.0, norm="slaney", onesided=True, n_mels=128, mel_scale="slaney")
+		self.melspctrogram = transforms.MelSpectrogram(sample_rate=48000, n_fft=2048, win_length=2048, hop_length=512, center=False, power=1.0, norm="slaney", onesided=True, n_mels=128, mel_scale="slaney", f_min=100.0, f_max=15000.0)
 
 	def forward(self, wav):
-		wav = F.pad(wav, ((1024 - 128) // 2, (1024 - 128) // 2), "reflect")
+		wav = F.pad(wav, ((2048 - 512) // 2, (2048 - 512) // 2), "reflect")  # Standard librosa/torchaudio center padding equivalent: (n_fft - hop_length) // 2
 		mel = self.melspctrogram(wav)
 		logmel = torch.log(torch.clamp(mel, min=1e-5))
 		return logmel

@@ -3,6 +3,7 @@ librosa
 matplotlib
 numpy
 phonemizer
+unidic-lite
 scipy
 tensorboard
 onnx
@@ -31,3 +32,6 @@ Caldav
 pytz
 unidecode
 pyopenjtalk
+torchaudio
+einops
+pytorch_lightning
