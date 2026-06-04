@@ -110,12 +110,16 @@ def _search_base_url() -> str:
 def _kagi_web_results(data) -> list[dict]:
 	"""Pull standard web hits out of a Kagi / Yuna Search JSON payload.
 
-	The newtab UI keeps entries where ``t == 0``; we mirror that here.
+	Supports legacy v0 list payloads and v1 ``data.search`` buckets.
 	"""
 	if not isinstance(data, dict):
 		return []
-	items = data.get("data")
-	if not isinstance(items, list):
+	raw = data.get("data")
+	if isinstance(raw, dict):
+		items = raw.get("search") or []
+	elif isinstance(raw, list):
+		items = raw
+	else:
 		return []
 	out = []
 	for item in items:

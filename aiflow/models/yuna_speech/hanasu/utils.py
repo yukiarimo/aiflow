@@ -284,8 +284,8 @@ def phonemize_text(text, language="en-us"):
 
 class PhonemeTokenizer:
 	"""Character-level tokenizer using the fixed symbol table from text.py. Pad token is ``_`` (id 0). Unknown characters are skipped, matching ``text.cleaned_text_to_sequence``."""
-	def __init__(self, symbols=None):
-		self.symbols = list(symbols if symbols is not None else list(symbols))
+	def __init__(self, symbol_table=None):
+		self.symbols = list(symbol_table if symbol_table is not None else symbols)
 		self.symbol_to_id = {s: i for i, s in enumerate(self.symbols)}
 
 	@property
@@ -314,8 +314,8 @@ class PhonemeTokenizer:
 
 	@classmethod
 	def from_dict(cls, data):
-		symbols = data.get("symbols")
-		return cls(symbols=list(symbols) if symbols else None)
+		stored = data.get("symbols")
+		return cls(symbol_table=list(stored) if stored else None)
 
 
 class VocosVocoder:
@@ -333,24 +333,28 @@ class VocosVocoder:
 		return audio.squeeze(0).detach().cpu()
 
 
-def load_vocos_vocoder(vocos_dir, device="cpu", checkpoint_name="latest.ckpt"):
-	"""Load a trained Vocos vocoder from its own folder without editing or importing it globally. The Vocos package uses module-local `import models`, so we load its models.py under a unique name via importlib to avoid clashing with this project's models.py."""
-	import importlib.util
+def denormalize_mel_tensor(mel, mel_stats):
+	"""Differentiable inverse of the training mel z-score (no hard clamp, so gradients flow). Used to feed predicted mels back through Vocos for the waveform-domain training loss."""
+	if not mel_stats or not mel_stats.get("normalized_training", False):
+		return mel
+	mean = float(mel_stats["mean"])
+	std = max(float(mel_stats["std"]), 1e-5)
+	return mel * std + mean
 
+
+def _load_vocos_modules(vocos_dir, device, checkpoint_name="latest.ckpt"):
+	"""Shared loader: build Vocos backbone+head from a weights folder and load the checkpoint."""
+	import logging
+	logging.getLogger("torio").setLevel(logging.WARNING)
+	from aiflow.models.yuna_speech.vocos.models import ISTFTHead, VocosBackbone
 	vocos_dir = Path(vocos_dir)
 	config_path = vocos_dir / "config.json"
 	checkpoint_path = vocos_dir / checkpoint_name
 	if not config_path.exists() or not checkpoint_path.exists():
 		raise FileNotFoundError(f"Vocos config or checkpoint missing in {vocos_dir}")
-
-	spec = importlib.util.spec_from_file_location("hanasu_vocos_models", str(vocos_dir / "models.py"))
-	vocos_models = importlib.util.module_from_spec(spec)
-	spec.loader.exec_module(vocos_models)
-
 	cfg = load_json(config_path)
-	backbone = vocos_models.VocosBackbone(**cfg["backbone"])
-	head = vocos_models.ISTFTHead(**cfg["head"])
-
+	backbone = VocosBackbone(**cfg["backbone"])
+	head = ISTFTHead(**cfg["head"])
 	ckpt = torch.load(checkpoint_path, map_location="cpu")
 	state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
 	for module, prefix in ((backbone, "backbone."), (head, "head.")):
@@ -358,4 +362,24 @@ def load_vocos_vocoder(vocos_dir, device="cpu", checkpoint_name="latest.ckpt"):
 		module.load_state_dict(sub, strict=False)
 	backbone.eval().to(device)
 	head.eval().to(device)
+	return backbone, head
+
+
+def load_vocos_vocoder(vocos_dir, device="cpu", checkpoint_name="latest.ckpt"):
+	"""Load a trained Vocos vocoder from a weights folder (config.json + checkpoint). Model code comes from the bundled yuna_speech.vocos package."""
+	backbone, head = _load_vocos_modules(vocos_dir, device, checkpoint_name)
 	return VocosVocoder(backbone, head, device)
+
+
+def load_vocos_generator(vocos_dir, device="cpu", checkpoint_name="latest.ckpt"):
+	"""Load a frozen Vocos generator (backbone, head) for use as a training-time perceptual loss. Parameters are frozen and set to eval, but (unlike VocosVocoder) the modules are NOT wrapped in inference_mode, so gradients can flow back through the *input mel* to the acoustic model while the vocoder weights stay fixed."""
+	backbone, head = _load_vocos_modules(vocos_dir, device, checkpoint_name)
+	for module in (backbone, head):
+		for p in module.parameters():
+			p.requires_grad_(False)
+	return backbone, head
+
+
+def vocos_mel_to_wav(backbone, head, mel_features):
+	"""Decode a waveform from log-mel features of shape (B, n_mels, T) using a Vocos generator."""
+	return head(backbone(mel_features))

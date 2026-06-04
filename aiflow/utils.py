@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+import uuid
 import datetime
 import requests
 import jwt
@@ -33,25 +34,81 @@ class ChatHistoryManager:
 	def __init__(self, file_path="db/chat.json"):
 		self.file_path = file_path
 
+	@staticmethod
+	def new_id():
+		"""Return a globally-unique message id.
+
+		Shape: ``msg-<ms-since-epoch>-<uuid4-hex>``. The uuid4 suffix alone is
+		collision-proof for any realistic lifetime (chatting for 10+ years is
+		nowhere near its 122 bits of entropy); the millisecond prefix just keeps
+		ids roughly sortable and greppable by creation time.
+		"""
+		return f"msg-{int(time.time() * 1000)}-{uuid.uuid4().hex}"
+
+	def _normalize(self, history):
+		"""Guarantee every message carries a unique ``id``, a numeric
+		``timestamp`` (seconds since epoch) and an ``images`` list.
+
+		Backfills anything missing — legacy/seed data, or messages the frontend
+		persisted without an id/timestamp — and de-duplicates colliding ids so
+		each message is addressable forever. Missing timestamps are filled with
+		a strictly non-decreasing value so message ordering survives the backfill.
+
+		Returns ``(history, changed)`` where ``changed`` is True if anything was
+		rewritten (so the caller can heal the on-disk file).
+		"""
+		if not isinstance(history, list):
+			return [], True
+		changed = False
+		seen_ids = set()
+		last_ts = None
+		for msg in history:
+			if not isinstance(msg, dict):
+				continue
+			if not isinstance(msg.get("images"), list):
+				msg["images"] = []
+				changed = True
+			ts = msg.get("timestamp")
+			if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+				ts = (last_ts + 0.001) if last_ts is not None else time.time()
+				msg["timestamp"] = ts
+				changed = True
+			last_ts = msg["timestamp"]
+			mid = msg.get("id")
+			if not isinstance(mid, str) or not mid or mid in seen_ids:
+				mid = self.new_id()
+				msg["id"] = mid
+				changed = True
+			seen_ids.add(mid)
+		return history, changed
+
 	def load_history(self):
 		try:
 			with open(self.file_path, "r", encoding="utf-8") as f:
-				return json.load(f)
+				history = json.load(f)
 
 		except (FileNotFoundError, json.JSONDecodeError):
 			with open(self.file_path, "w", encoding="utf-8") as f:
 				json.dump([], f)
 			return []
 
-	def save_history(self, history):
+		history, changed = self._normalize(history)
+		if changed:
+			# Heal the file in place so ids/timestamps are persisted exactly once.
+			self.save_history(history, normalize=False)
+		return history
+
+	def save_history(self, history, normalize=True):
+		if normalize:
+			history, _ = self._normalize(history)
 		with open(self.file_path, "w", encoding="utf-8") as f:
 			json.dump(history, f, indent=2)
 
 	def add_message(self, role, text, images=None):
 		history = self.load_history()
-		msg = {"id": f"msg-{int(time.time() * 1000)}", "name": role, "text": text, "images": images or [], "timestamp": time.time(), }
+		msg = {"id": self.new_id(), "name": role, "text": text, "images": images or [], "timestamp": time.time(), }
 		history.append(msg)
-		self.save_history(history)
+		self.save_history(history, normalize=False)
 		return msg
 
 	def clear_history(self):

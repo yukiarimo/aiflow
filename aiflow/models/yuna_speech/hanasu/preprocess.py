@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from .utils import MelSpectrogram, PhonemeTokenizer, load_json, resample_linear, resolve_cache_dir, save_config, save_json, to_mono, validate_audio
+from .utils import MelSpectrogram, PhonemeTokenizer, load_json, resample_linear, resolve_cache_dir, save_config, save_json, to_mono, validate_audio, load_config
 
 
 def _load_audio_path(path):
@@ -194,7 +194,14 @@ def prepare_dataset(config, filelist_path=None, val_filelist_path=None, limit=No
 	mel_mean = stats["sum"] / max(1, stats["count"])
 	mel_var = max(1e-8, stats["sumsq"] / max(1, stats["count"]) - mel_mean * mel_mean)
 	mel_std = math.sqrt(mel_var)
-	manifest = {"source": str(filelist_path), "sample_rate": int(audio_cfg["sample_rate"]), "audio": audio_cfg, "tokenizer": tokenizer.to_dict(), "speakers": speakers_map, "languages": languages_map, "mel_stats": {"mean": mel_mean, "std": mel_std, "min": stats["min"], "max": stats["max"], "count": stats["count"], "normalized_training": True, }, "samples": prepared, "examples": examples, "skipped": skipped[:50], }
+	# Per-speaker clip/frame tallies: equal clip counts can still be wildly unequal in frames (the unit the mel loss actually sums over), so surface both for fairness debugging.
+	speaker_clip_counts = {}
+	speaker_frame_counts = {}
+	for sample in prepared:
+		spk = sample["speaker"]
+		speaker_clip_counts[spk] = speaker_clip_counts.get(spk, 0) + 1
+		speaker_frame_counts[spk] = speaker_frame_counts.get(spk, 0) + int(sample["frames"])
+	manifest = {"source": str(filelist_path), "sample_rate": int(audio_cfg["sample_rate"]), "audio": audio_cfg, "tokenizer": tokenizer.to_dict(), "speakers": speakers_map, "languages": languages_map, "mel_stats": {"mean": mel_mean, "std": mel_std, "min": stats["min"], "max": stats["max"], "count": stats["count"], "normalized_training": True, }, "speaker_clip_counts": speaker_clip_counts, "speaker_frame_counts": speaker_frame_counts, "samples": prepared, "examples": examples, "skipped": skipped[:50], }
 	split_data = {"train": train_indices, "val": val_indices}
 	save_json(manifest, manifest_path)
 	save_json(split_data, split_path)
@@ -202,13 +209,15 @@ def prepare_dataset(config, filelist_path=None, val_filelist_path=None, limit=No
 	print(f"Prepared {len(prepared)} samples in {cache_root}; skipped {len(skipped)}")
 	print(f"Train/val split: {len(train_indices)}/{len(val_indices)}")
 	print(f"Mel stats: mean={mel_mean:.4f}, std={mel_std:.4f}, min={stats['min']:.4f}, max={stats['max']:.4f}")
+	print(f"Per-speaker clips: {speaker_clip_counts}")
+	print(f"Per-speaker frames: {speaker_frame_counts}")
 	for ex in examples:
 		print(f"Example [{ex['speaker']}/{ex['language']}]: {ex['text']}")
 	return manifest
 
 
 class HanasuDataset(Dataset):
-	def __init__(self, cache_root, split="train"):
+	def __init__(self, cache_root, split="train", in_memory=False):
 		self.cache_root = Path(cache_root)
 		manifest_path = self.cache_root / "manifest.json"
 		split_path = self.cache_root / "split.json"
@@ -219,13 +228,27 @@ class HanasuDataset(Dataset):
 		self.indices = list(self.split_data[split])
 		self.samples = self.manifest["samples"]
 		self.mel_stats = self.manifest.get("mel_stats")
+		self.in_memory = bool(in_memory)
+		self._cache = None
+		if self.in_memory:
+			self._cache = {}  # Preload every sample tensor for this split into RAM once, so __getitem__ never touches disk during training. mels are kept as float16 to roughly halve memory.
+			desc = f"Caching {split} samples in RAM"
+			for real_idx in tqdm(self.indices, desc=desc):
+				data = torch.load(self.cache_root / self.samples[real_idx]["path"], map_location="cpu")
+				data["mel"] = data["mel"].to(torch.float16)
+				self._cache[real_idx] = data
 
 	def __len__(self):
 		return len(self.indices)
 
+	def _load_sample(self, real_idx):
+		if self._cache is not None:
+			data = self._cache[real_idx]
+			return {"tokens": data["tokens"], "mel": data["mel"].to(torch.float32), "speaker_id": data.get("speaker_id", 0), "language_id": data.get("language_id", 0), "text": data.get("text", ""), }
+		return torch.load(self.cache_root / self.samples[real_idx]["path"], map_location="cpu")
+
 	def __getitem__(self, idx):
-		sample = self.samples[self.indices[idx]]
-		data = torch.load(self.cache_root / sample["path"], map_location="cpu")
+		data = self._load_sample(self.indices[idx])
 		if self.mel_stats and self.mel_stats.get("normalized_training", False):
 			mean = float(self.mel_stats["mean"])
 			std = max(float(self.mel_stats["std"]), 1e-5)
@@ -257,7 +280,6 @@ def collate_batch(batch, pad_id=0):
 
 if __name__ == "__main__":
 	import argparse
-	from utils import load_config
 	parser = argparse.ArgumentParser(description="Prepare phonemized multi-speaker features for HanasuTTS.")
 	parser.add_argument("--config", default="config.json")
 	parser.add_argument("--filelist", default=None, help="Path to the phonemized filelist (wav|speaker|language|phonemes).")

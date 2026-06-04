@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -251,19 +252,54 @@ class HanasuTTS(nn.Module):
 		return TacotronOutput(mel=mel, mel_postnet=mel_postnet, stop_logits=stop_logits, alignments=align)
 
 
-def hanasu_loss(output, target_mel, mel_lens, token_lens, mel_weight=1.0, stop_weight=0.5, guided_attention_weight=0.2, guided_attention_sigma=0.4, ):
+def hanasu_loss(output, target_mel, mel_lens, token_lens, mel_weight=1.0, stop_weight=0.5, guided_attention_weight=0.2, guided_attention_sigma=0.4, mel_mse_weight=0.0, temporal_delta_weight=0.0, freq_delta_weight=0.0, band_weights=None, sample_weights=None, ):
+	"""Multi-term acoustic loss.
+	band_weights: optional (B, n_mels) per-sample mel-band emphasis (e.g. boosting each speaker's f0/harmonic region) so the model is pushed to reproduce pitch/expressive detail rather than averaging it away.
+	sample_weights: optional (B,) per-sample scalar (speaker balancing).
+	Beyond the standard L1 reconstruction it adds: an L2 term (discourages the blurry, muffled mels L1 alone tolerates), a temporal-delta term (matches frame-to-frame motion -> less jittery, more natural prosody) and a frequency-delta term (sharper formants).
+	"""
 	max_len = min(output.mel.shape[1], target_mel.shape[1])
+	pred = output.mel[:, :max_len]
+	post = output.mel_postnet[:, :max_len]
 	target = target_mel[:, :max_len]
-	mel_mask = ~make_padding_mask(mel_lens.clamp(max=max_len), max_len)
-	mel_loss = F.l1_loss(output.mel[:, :max_len][mel_mask], target[mel_mask])
-	post_loss = F.l1_loss(output.mel_postnet[:, :max_len][mel_mask], target[mel_mask])
+	frame_valid = (~make_padding_mask(mel_lens.clamp(max=max_len), max_len)).float()  # (B, T)
+	weight = frame_valid.unsqueeze(-1)  # (B, T, 1)
+	if band_weights is not None:
+		weight = weight * band_weights.unsqueeze(1)  # (B, T, n_mels)
+	if sample_weights is not None:
+		weight = weight * sample_weights.view(-1, 1, 1)
+	denom = weight.sum().clamp(min=1.0)
+
+	mel_loss = (weight * (pred - target).abs()).sum() / denom
+	post_loss = (weight * (post - target).abs()).sum() / denom
+	mel_mse = (weight * (post - target).square()).sum() / denom if mel_mse_weight > 0 else pred.new_tensor(0.0)
+
+	if temporal_delta_weight > 0 and max_len > 1:
+		valid_pair = (frame_valid[:, 1:] * frame_valid[:, :-1]).unsqueeze(-1)  # (B, T-1, 1)
+		w_t = valid_pair * (band_weights.unsqueeze(1) if band_weights is not None else 1.0)
+		if sample_weights is not None:
+			w_t = w_t * sample_weights.view(-1, 1, 1)
+		d_pred = post[:, 1:] - post[:, :-1]
+		d_tgt = target[:, 1:] - target[:, :-1]
+		temporal_loss = (w_t * (d_pred - d_tgt).abs()).sum() / (w_t.sum().clamp(min=1.0) if torch.is_tensor(w_t) else 1.0)
+	else:
+		temporal_loss = pred.new_tensor(0.0)
+
+	if freq_delta_weight > 0 and post.shape[-1] > 1:
+		fw = frame_valid.unsqueeze(-1)
+		df_pred = post[:, :, 1:] - post[:, :, :-1]
+		df_tgt = target[:, :, 1:] - target[:, :, :-1]
+		freq_loss = (fw * (df_pred - df_tgt).abs()).sum() / (fw.expand_as(df_pred).sum().clamp(min=1.0))
+	else:
+		freq_loss = pred.new_tensor(0.0)
+
 	stop_target = torch.zeros_like(output.stop_logits[:, :max_len])
 	for i, length in enumerate(mel_lens.tolist()):
 		stop_target[i, max(0, min(length, max_len) - 1):] = 1.0
 	stop_loss = F.binary_cross_entropy_with_logits(output.stop_logits[:, :max_len], stop_target)
 	guide_loss = guided_attention_loss(output.alignments, token_lens, mel_lens, reduction_factor=max(1, output.stop_logits.shape[1] // max(1, output.alignments.shape[1])), sigma=guided_attention_sigma, )
-	loss = mel_weight * (mel_loss + post_loss) + stop_weight * stop_loss + guided_attention_weight * guide_loss
-	return loss, {"mel_loss": float(mel_loss.detach().cpu()), "postnet_mel_loss": float(post_loss.detach().cpu()), "stop_loss": float(stop_loss.detach().cpu()), "guided_attention_loss": float(guide_loss.detach().cpu()), }
+	loss = mel_weight * (mel_loss + post_loss) + mel_mse_weight * mel_mse + temporal_delta_weight * temporal_loss + freq_delta_weight * freq_loss + stop_weight * stop_loss + guided_attention_weight * guide_loss
+	return loss, {"mel_loss": float(mel_loss.detach().cpu()), "postnet_mel_loss": float(post_loss.detach().cpu()), "mel_mse": float(mel_mse.detach().cpu()), "temporal_delta_loss": float(temporal_loss.detach().cpu()), "freq_delta_loss": float(freq_loss.detach().cpu()), "stop_loss": float(stop_loss.detach().cpu()), "guided_attention_loss": float(guide_loss.detach().cpu()), }
 
 
 def guided_attention_loss(alignments, token_lens, mel_lens, reduction_factor, sigma=0.4):
@@ -281,3 +317,75 @@ def guided_attention_loss(alignments, token_lens, mel_lens, reduction_factor, si
 		weights = 1.0 - torch.exp(-((t[:, None] - n[None, :])**2) / (2.0 * sigma * sigma))
 		losses.append((alignments[batch_idx, :dec_len, :text_len] * weights).sum(dim=-1).mean())
 	return torch.stack(losses).mean()
+
+
+def _hz_to_mel(hz):
+	return 2595.0 * math.log10(1.0 + hz / 700.0)
+
+
+def _mel_to_hz(mel):
+	return 700.0 * (10.0**(mel / 2595.0) - 1.0)
+
+
+def mel_band_center_freqs(n_mels, f_min, f_max):
+	"""Center frequency (Hz) of each mel band, matching torchaudio's htk mel layout."""
+	m_min, m_max = _hz_to_mel(f_min), _hz_to_mel(f_max)
+	m_pts = [m_min + (m_max - m_min) * i / (n_mels + 1) for i in range(n_mels + 2)]
+	centers = [_mel_to_hz(m) for m in m_pts[1:-1]]
+	return torch.tensor(centers, dtype=torch.float32)
+
+
+def build_speaker_band_weights(num_speakers, n_mels, f_min, f_max, speaker_f0_by_id, emphasis=0.5, harmonics=6):
+	"""Per-speaker (num_speakers, n_mels) mel-band weights that emphasize the fundamental and first few harmonics of each voice. This nudges the mel loss to care more about the pitch/harmonic structure that carries expressiveness, per speaker (e.g. a high-f0 girl vs a low-f0 boy). Weights are mean-normalized to ~1 per speaker so the overall loss scale is unchanged. Returns None when emphasis<=0 so callers can skip the work entirely."""
+	if emphasis <= 0 or not speaker_f0_by_id:
+		return None
+	centers = mel_band_center_freqs(n_mels, f_min, f_max)
+	weights = torch.ones(num_speakers, n_mels, dtype=torch.float32)
+	for sid, f0 in speaker_f0_by_id.items():
+		if f0 is None or float(f0) <= 0:
+			continue
+		f0 = float(f0)
+		w = torch.ones(n_mels, dtype=torch.float32)
+		for k in range(1, int(harmonics) + 1):
+			hf = k * f0
+			if hf > f_max:
+				break
+			width = max(0.5 * f0, 1.0)
+			w = w + emphasis * torch.exp(-0.5 * ((centers - hf) / width)**2)
+		w = w * (n_mels / w.sum().clamp(min=1e-6))  # mean-normalize to keep loss scale stable
+		if 0 <= int(sid) < num_speakers:
+			weights[int(sid)] = w
+	return weights
+
+
+class MultiResolutionSTFTLoss(nn.Module):
+	"""Spectral-convergence + log-magnitude STFT loss at several resolutions, computed on waveforms (e.g. Vocos-decoded predicted vs. target mel). Captures periodic/harmonic fine structure that frame-wise mel L1 misses, without training the vocoder itself."""
+	def __init__(self, fft_sizes=(512, 1024, 2048), hop_sizes=(128, 256, 512), win_sizes=(512, 1024, 2048)):
+		super().__init__()
+		self.fft_sizes = list(fft_sizes)
+		self.hop_sizes = list(hop_sizes)
+		self.win_sizes = list(win_sizes)
+		self._windows = {}
+
+	def _window(self, win, device, dtype):
+		key = (win, device, dtype)
+		if key not in self._windows:
+			self._windows[key] = torch.hann_window(win, device=device, dtype=dtype)
+		return self._windows[key]
+
+	def _stft_mag(self, x, fft, hop, win):
+		window = self._window(win, x.device, x.dtype)
+		spec = torch.stft(x, n_fft=fft, hop_length=hop, win_length=win, window=window, center=True, return_complex=True)
+		return spec.abs().clamp(min=1e-7)
+
+	def forward(self, pred, target):
+		pred = pred.float()
+		target = target.float()
+		total = pred.new_tensor(0.0)
+		for fft, hop, win in zip(self.fft_sizes, self.hop_sizes, self.win_sizes):
+			x = self._stft_mag(pred, fft, hop, win)
+			y = self._stft_mag(target, fft, hop, win)
+			sc = torch.norm(y - x, p="fro") / torch.norm(y, p="fro").clamp(min=1e-7)
+			mag = F.l1_loss(torch.log(x), torch.log(y))
+			total = total + sc + mag
+		return total / max(1, len(self.fft_sizes))

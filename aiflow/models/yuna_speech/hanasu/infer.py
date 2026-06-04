@@ -1,9 +1,12 @@
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 import torch
 from safetensors.torch import save_file
+from tqdm import tqdm
+from aiflow.models.yuna_speech.text import split_and_process_text
 from .models import HanasuTTS
 from .utils import PhonemeTokenizer, count_parameters, format_param_count, get_device, json_safe, load_checkpoint, load_config, load_vocos_vocoder, load_wav, phonemize_text, save_wav, wav_to_model_mel
 
@@ -67,6 +70,73 @@ def denormalize_mel(mel, config):
 	std = max(float(mel_stats["std"]), 1e-5)
 	mel = mel * std + mean
 	return mel.clamp(float(mel_stats.get("min", -14.0)), float(mel_stats.get("max", 4.0)))
+
+
+def build_language_map(languages_map):
+	if languages_map:
+		return {name: name for name in languages_map}
+	return {"en-us": "en-us", "ru": "ru", "ja": "ja"}
+
+
+def split_phoneme_text(text):
+	"""Split already-phonemized text into one chunk per sentence (. ? !)."""
+	text = text.strip()
+	sentences = re.split(r"([.!?]+)(?:\s+|$)", text)
+	result = []
+	for i in range(0, len(sentences) - 1, 2):
+		sentence = sentences[i].strip()
+		if sentence:
+			result.append(f"{sentence}{sentences[i + 1]}")
+	if len(sentences) % 2 == 1 and sentences[-1].strip():
+		result.append(sentences[-1].strip())
+	return result if result else ([text] if text else [])
+
+
+def prepare_text_chunks(text, language_name, languages_map, phonemized=False):
+	"""Split text into one synthesis chunk per sentence (. ? !)."""
+	if phonemized:
+		return [{"text": chunk, "language": language_name} for chunk in split_phoneme_text(text) if chunk.strip()]
+	language_map = build_language_map(languages_map)
+	return split_and_process_text(text, language=language_name, combine=False, language_map=language_map)
+
+
+def resolve_chunk_language_id(chunk_language, languages_map, default_language_id):
+	if chunk_language in languages_map:
+		return int(languages_map[chunk_language])
+	return int(default_language_id)
+
+
+@torch.no_grad()
+def synthesize_long_text(config, model, tokenizer, text, device, vocoder, speaker_id=0, language_id=0, language_name="en-us", languages_map=None, phonemized=False, max_steps=None, stop_threshold=None, attention_window=None, normalize_wav=False, debug=False, use_postnet=True, prompt=None, include_prompt_in_output=True, use_speaker_embedding=True, output=None, ):
+	"""Synthesize long text one sentence at a time and concatenate the audio."""
+	if prompt is not None:
+		raise ValueError("Prompt conditioning does not support chunked synthesis")
+
+	languages_map = languages_map or {}
+	chunks = prepare_text_chunks(text, language_name, languages_map, phonemized=phonemized)
+	if not chunks:
+		raise ValueError("No text chunks to synthesize")
+
+	if len(chunks) == 1:
+		chunk = chunks[0]
+		print(f"Phonemized [{chunk['language']}]: {chunk['text']}")
+	elif len(chunks) > 1:
+		print(f"Synthesizing {len(chunks)} text chunks")
+
+	wav_parts = []
+	for chunk_obj in tqdm(chunks, desc="Generating audio", unit="chunk"):
+		chunk_text = chunk_obj["text"]
+		chunk_language_id = resolve_chunk_language_id(chunk_obj["language"], languages_map, language_id)
+		chunk_output = output
+		wav = synthesize(config, model, tokenizer, chunk_text, device, vocoder, speaker_id=speaker_id, language_id=chunk_language_id, max_steps=max_steps, stop_threshold=stop_threshold, attention_window=attention_window, normalize_wav=False, debug=debug, use_postnet=use_postnet, output=chunk_output, prompt=prompt, include_prompt_in_output=include_prompt_in_output, use_speaker_embedding=use_speaker_embedding, )
+		wav_parts.append(wav)
+
+	wav = wav_parts[0] if len(wav_parts) == 1 else torch.cat(wav_parts)
+	if normalize_wav:
+		peak = wav.abs().max()
+		if peak > 0:
+			wav = wav / peak * 0.95
+	return wav
 
 
 def build_prompted_text(prompt_text, target_text, tokenizer, phonemized=False, language_name="en-us"):
@@ -235,36 +305,45 @@ def main():
 		parser.error("--prompt-audio and --prompt-text must be used together")
 
 	prompt = None
+	raw_text = args.text
+	phonemized = args.phonemes
 	if args.prompt_audio:
 		combined, prompt = prepare_prompt(config, args.prompt_audio, args.prompt_text, args.text, tokenizer, device, phonemized=args.phonemes, language_name=language_name, )
-		text = combined
+		raw_text = combined
+		phonemized = True
 		print(f"Prompt phonemes [{language_name}]: {prompt.prompt_phonemes}")
 		print(f"Target phonemes [{language_name}]: {prompt.target_phonemes}")
-	elif args.phonemes:
-		text = args.text
-	else:
-		text = phonemize_text(args.text, language_name)
-		print(f"Phonemized [{language_name}]: {text}")
 
 	vocoder = build_vocoder(device, args.vocos_dir)
-	synth_kwargs = dict(config=config, model=model, tokenizer=tokenizer, text=text, device=device, vocoder=vocoder, speaker_id=speaker_id, language_id=language_id, max_steps=args.max_steps, stop_threshold=args.stop_threshold, attention_window=args.attention_window, normalize_wav=args.normalize_wav, debug=args.debug, prompt=prompt, include_prompt_in_output=not args.no_prompt_in_output, use_speaker_embedding=not args.no_speaker, )
+	synth_kwargs = dict(config=config, model=model, tokenizer=tokenizer, text=raw_text, device=device, vocoder=vocoder, speaker_id=speaker_id, language_id=language_id, language_name=language_name, languages_map=languages_map, phonemized=phonemized, max_steps=args.max_steps, stop_threshold=args.stop_threshold, attention_window=args.attention_window, normalize_wav=args.normalize_wav, debug=args.debug, prompt=prompt, include_prompt_in_output=not args.no_prompt_in_output, use_speaker_embedding=not args.no_speaker, )
 	sample_rate = int(config["audio"]["sample_rate"])
 
 	if args.compare_postnet:
 		out_path = Path(args.out)
-		output = infer_output(config, model, tokenizer, text, device, speaker_id=speaker_id, language_id=language_id, max_steps=args.max_steps, stop_threshold=args.stop_threshold, attention_window=args.attention_window, prompt=prompt, use_speaker_embedding=not args.no_speaker, )
-		for use_postnet, suffix in ((True, "postnet"), (False, "prepostnet")):
-			path = out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix or '.wav'}")
-			print(f"--- {suffix} ---")
-			wav = synthesize(**synth_kwargs, use_postnet=use_postnet, output=output)
-			save_wav(path, wav, sample_rate)
-			print(f"Saved {path}")
+		if prompt is not None:
+			output = infer_output(config, model, tokenizer, raw_text, device, speaker_id=speaker_id, language_id=language_id, max_steps=args.max_steps, stop_threshold=args.stop_threshold, attention_window=args.attention_window, prompt=prompt, use_speaker_embedding=not args.no_speaker, )
+			for use_postnet, suffix in ((True, "postnet"), (False, "prepostnet")):
+				path = out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix or '.wav'}")
+				print(f"--- {suffix} ---")
+				wav = synthesize(**synth_kwargs, use_postnet=use_postnet, output=output)
+				save_wav(path, wav, sample_rate)
+				print(f"Saved {path}")
+		else:
+			for use_postnet, suffix in ((True, "postnet"), (False, "prepostnet")):
+				path = out_path.with_name(f"{out_path.stem}_{suffix}{out_path.suffix or '.wav'}")
+				print(f"--- {suffix} ---")
+				wav = synthesize_long_text(**synth_kwargs, use_postnet=use_postnet)
+				save_wav(path, wav, sample_rate)
+				print(f"Saved {path}")
 		return
 
 	use_postnet = not args.no_postnet
 	if args.no_postnet:
 		print("Using pre-postnet decoder mel (postnet bypassed for Vocos)")
-	wav = synthesize(**synth_kwargs, use_postnet=use_postnet)
+	if prompt is not None:
+		wav = synthesize(**synth_kwargs, use_postnet=use_postnet)
+	else:
+		wav = synthesize_long_text(**synth_kwargs, use_postnet=use_postnet)
 	save_wav(Path(args.out), wav, sample_rate)
 	print(f"Saved {args.out}")
 

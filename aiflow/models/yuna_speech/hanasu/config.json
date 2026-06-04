@@ -11,11 +11,16 @@
 		"limit": null,
 		"percent": null,
 		"min_audio_seconds": 0.25,
-		"max_audio_seconds": 20.0,
-		"max_tokens": 1024,
+		"max_audio_seconds": 30.0,
+		"max_tokens": 1600,
+		"in_memory": false,
 		"speakers": {
 			"Yuna": 0,
 			"Yuki": 1
+		},
+		"speaker_f0": {
+			"Yuna": 350.0,
+			"Yuki": 130.0
 		},
 		"languages": {
 			"en-us": 0,
@@ -53,7 +58,7 @@
 		"postnet_layers": 5,
 		"dropout": 0.5,
 		"postnet_dropout": 0.5,
-		"max_decoder_steps": 1200,
+		"max_decoder_steps": 3000,
 		"stop_threshold": 0.55,
 		"attention_window": 12
 	},
@@ -73,6 +78,18 @@
 		"mel_loss_weight": 1.0,
 		"stop_loss_weight": 0.5,
 		"guided_attention_weight": 1.0,
-		"guided_attention_sigma": 0.4
+		"guided_attention_sigma": 0.4,
+		"mel_mse_weight": 0.25,
+		"temporal_delta_weight": 0.5,
+		"freq_delta_weight": 0.2,
+		"f0_emphasis_weight": 0.5,
+		"f0_emphasis_harmonics": 6,
+		"speaker_loss_weights": {
+			"Yuna": 1.0,
+			"Yuki": 1.0
+		},
+		"vocos_loss_weight": 0.25,
+		"vocos_loss_max_frames": 320,
+		"vocos_loss_interval": 1
 	}
 }
