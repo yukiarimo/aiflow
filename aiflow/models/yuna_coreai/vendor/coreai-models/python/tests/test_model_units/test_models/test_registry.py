@@ -1,0 +1,56 @@
+# Copyright 2026 Apple Inc.
+#
+# Use of this source code is governed by a BSD-3-clause license that can
+# be found in the LICENSE file or at https://opensource.org/licenses/BSD-3-Clause
+
+"""Tests for the model registry."""
+
+import pytest
+
+from coreai_models.models.registry import get_model_entry, list_models
+
+
+class TestModelRegistry:
+    """Test model registry lookups."""
+
+    def test_list_models_contains_qwen3(self):
+        """The registry should list 'qwen3' as a supported model."""
+        models = list_models()
+        assert "qwen3" in models
+
+    def test_list_models_returns_sorted(self):
+        """list_models returns a sorted list."""
+        models = list_models()
+        assert models == sorted(models)
+
+    def test_get_qwen3_entry(self):
+        """get_model_entry('qwen3') returns an entry with both macOS and iOS classes."""
+        entry = get_model_entry("qwen3")
+        assert entry.macos_class is not None
+        assert entry.ios_class is not None
+
+    def test_get_qwen3_macos_class_is_correct(self):
+        """The macOS class for qwen3 is Qwen3ForCausalLM."""
+        from coreai_models.models.macos.qwen3 import Qwen3ForCausalLM
+
+        entry = get_model_entry("qwen3")
+        assert entry.macos_class is Qwen3ForCausalLM
+
+    def test_get_qwen3_ne_class_is_correct(self):
+        """The iOS class for qwen3 is Qwen3ForCausalLMForiOS."""
+        from coreai_models.models.ios.qwen3 import (
+            Qwen3ForCausalLMForiOS,
+        )
+
+        entry = get_model_entry("qwen3")
+        assert entry.ios_class is Qwen3ForCausalLMForiOS
+
+    def test_unknown_model_raises_key_error(self):
+        """Requesting a nonexistent model should raise KeyError."""
+        with pytest.raises(KeyError, match="nonexistent_model"):
+            get_model_entry("nonexistent_model")
+
+    def test_unknown_model_error_lists_available(self):
+        """The KeyError message should list available model types."""
+        with pytest.raises(KeyError, match="qwen3"):
+            get_model_entry("nonexistent_model")

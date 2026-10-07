@@ -1,0 +1,124 @@
+{
+	"configurations": [
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Debug speech-runner (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "speech-runner",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug speech-runner (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Release speech-runner (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "speech-runner",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release speech-runner (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Debug object-detector (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "object-detector",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug object-detector (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Release object-detector (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "object-detector",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release object-detector (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Debug llm-runner (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "llm-runner",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug llm-runner (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Release llm-runner (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "llm-runner",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release llm-runner (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Debug llm-benchmark (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "llm-benchmark",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug llm-benchmark (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Release llm-benchmark (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "llm-benchmark",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release llm-benchmark (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Debug image-segmenter (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "image-segmenter",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug image-segmenter (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Release image-segmenter (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "image-segmenter",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release image-segmenter (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Debug diffusion-runner (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "diffusion-runner",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug diffusion-runner (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:aiflow}/aiflow/models/yuna_coreai/vendor/coreai-models",
+			"name": "Release diffusion-runner (aiflow/models/yuna_coreai/vendor/coreai-models)",
+			"target": "diffusion-runner",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release diffusion-runner (aiflow/models/yuna_coreai/vendor/coreai-models)"
+		}
+	]
+}

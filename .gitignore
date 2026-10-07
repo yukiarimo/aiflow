@@ -138,3 +138,10 @@ aiflow/models/yuna_pitch/*
 .DS_Store
 latest.pt
 core.c
+
+# Secret
+.sync-hash.json
+
+# Dataset
+aiflow/models/yuna_speech/styletts2
+aiflow/models/yuna_speech/diffsinger

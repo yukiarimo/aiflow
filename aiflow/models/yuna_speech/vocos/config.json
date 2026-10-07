@@ -1,41 +1,35 @@
 {
 	"seed": 8,
 	"data": {
-		"train": {
-			"filelist_path": "filelist.train",
-			"sampling_rate": 48000,
-			"num_samples": 96000,
-			"batch_size": 16,
-			"num_workers": 8
-		},
-		"val": {
-			"filelist_path": "filelist.val",
-			"sampling_rate": 48000,
-			"num_samples": 96000,
-			"batch_size": 16,
-			"num_workers": 8
-		}
+		"wav_dir": "/mnt/local-scratch/Yuna",
+		"sampling_rate": 48000,
+		"num_samples": 96000,
+		"batch_size": 16,
+		"num_workers": 4,
+		"eval_index": 0
 	},
 	"feature_extractor": {
 		"sample_rate": 48000,
 		"n_fft": 2048,
-		"hop_length": 512,
+		"hop_length": 256,
 		"n_mels": 128,
-		"f_min": 100.0,
-		"f_max": 15000.0,
-		"padding": "center"
+		"f_min": 0.0,
+		"f_max": 24000.0,
+		"padding": "same",
+		"mel_mean": -4.0,
+		"mel_std": 4.0
 	},
 	"backbone": {
 		"input_channels": 128,
 		"dim": 512,
 		"intermediate_dim": 1536,
-		"num_layers": 8
+		"num_layers": 12
 	},
 	"head": {
 		"dim": 512,
 		"n_fft": 2048,
-		"hop_length": 512,
-		"padding": "center"
+		"hop_length": 256,
+		"padding": "same"
 	},
 	"model": {
 		"sample_rate": 48000,
@@ -52,6 +46,6 @@
 		"limit_val_batches": 100,
 		"log_every_n_steps": 100,
 		"save_top_k": 3,
-		"precision": "bf16"
+		"precision": "bf16-mixed"
 	}
 }

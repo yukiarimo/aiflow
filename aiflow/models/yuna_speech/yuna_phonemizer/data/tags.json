@@ -1,0 +1,24 @@
+{
+	"_note": "Bracket tags for G2P + StyleTTS2. Events map to unused 177-table symbols. Styles are continuous codes (dim set in StyleTTS2 config emotion_dim). Residue = soft style after affective events.",
+	"events": {
+		"breath": "¡",
+		"laugh": "¿",
+		"sigh": "…",
+		"cough": "«",
+		"sneeze": "»",
+		"sniff": "“",
+		"yawn": "”",
+		"clears throat": "→",
+		"humming": "↗",
+		"screaming": "↘",
+		"growl": "ʘ",
+		"sob": "ǃ"
+	},
+	"styles": ["neutral", "sad", "angry", "calm", "scared", "happy", "excited", "whispering", "shouting", "crying", "moaning"],
+	"residue": {
+		"sigh": ["sad", 0.55],
+		"sob": ["crying", 0.55],
+		"growl": ["angry", 0.45],
+		"screaming": ["scared", 0.45]
+	}
+}

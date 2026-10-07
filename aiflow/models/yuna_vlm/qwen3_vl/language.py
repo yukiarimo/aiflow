@@ -71,13 +71,10 @@ class Attention(nn.Module):
 
 	def __call__(self, x, mask=None, cache=None, position_ids=None):
 		B, L, D = x.shape
-
 		queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
-
 		queries = self.q_norm(queries.reshape(B, L, self.n_heads, self.head_dim)).transpose(0, 2, 1, 3)
 		keys = self.k_norm(keys.reshape(B, L, self.n_kv_heads, self.head_dim)).transpose(0, 2, 1, 3)
 		values = values.reshape(B, L, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
-
 		kv_seq_len = keys.shape[-2]
 
 		if position_ids is None:
@@ -268,10 +265,8 @@ class LanguageModel(nn.Module):
 				if st < len(input_tokens):
 					st_idx = (llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0)
 					text_len = len(input_tokens) - st
-
 					t_index = mx.arange(text_len).reshape(1, text_len)
 					t_index = mx.broadcast_to(t_index, (3, text_len))
-
 					llm_pos_ids_list.append(t_index + st_idx)
 
 				llm_positions = mx.concatenate(llm_pos_ids_list, axis=1).reshape(3, -1)

@@ -1,0 +1,9 @@
+{
+	"default_marks": ";:,.!?¡¿—…\"«»“”(){}[]",
+	"language_switch_re": "\\(.+?\\)",
+	"phone_sep": "",
+	"word_sep": " ",
+	"phonemes_mode_1_48": 19,
+	"text_mode": 1,
+	"audio_output_synchronous": 2
+}

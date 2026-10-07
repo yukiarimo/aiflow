@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+lexicons/*.json
+.DS_Store
+!lib/

@@ -1,0 +1,46 @@
+{
+	"symbols_to_japanese": [["％", "パーセント"]],
+	"romaji_to_ipa": [
+		["u", "ɯ"],
+		["ʧ", "tʃ"],
+		["j", "dʑ"],
+		["y", "j"],
+		["ni", "n^i"],
+		["nj", "n^"],
+		["hi", "çi"],
+		["hj", "ç"],
+		["f", "ɸ"],
+		["I", "i*"],
+		["U", "ɯ*"],
+		["r", "ɾ"]
+	],
+	"real_sokuon": [
+		["Q([↑↓]*[kg])", "k#\\1"],
+		["Q([↑↓]*[tdjʧ])", "t#\\1"],
+		["Q([↑↓]*[sʃ])", "s\\1"],
+		["Q([↑↓]*[pb])", "p#\\1"]
+	],
+	"real_hatsuon": [
+		["N([↑↓]*[pbm])", "m\\1"],
+		["N([↑↓]*[ʧʥj])", "n^\\1"],
+		["N([↑↓]*[tdn])", "n\\1"],
+		["N([↑↓]*[kg])", "ŋ\\1"]
+	],
+	"ipa3": { "n^": "ȵ", "ʃ": "ɕ", "*": "̥", "#": "̚" },
+	"phone_replace": [
+		["ch", "ʧ"],
+		["sh", "ʃ"],
+		["cl", "Q"]
+	],
+	"skip_phones": ["sil", "pau"],
+	"japanese_characters": "[A-Za-z\\d\\u3005\\u3040-\\u30ff\\u4e00-\\u9fff\\uff11-\\uff19\\uff21-\\uff3a\\uff41-\\uff5a\\uff66-\\uff9d]",
+	"japanese_marks": "[^A-Za-z\\d\\u3005\\u3040-\\u30ff\\u4e00-\\u9fff\\uff11-\\uff19\\uff21-\\uff3a\\uff41-\\uff5a\\uff66-\\uff9d]",
+	"phoneme_re": "\\-([^\\+]*)\\+",
+	"a1_re": "/A:(\\-?[0-9]+)\\+",
+	"a2_re": "\\+(\\d+)\\+",
+	"a3_re": "\\+(\\d+)/",
+	"vowel_geminate_re": "([aiɯeo])\\1+",
+	"aspirate_re": "((?:^|\\s)(?:ts|tɕ|[kpt]))",
+	"ellipsis": ["...", "…"],
+	"openjtalk_dict": "open_jtalk_dic_utf_8-1.11"
+}

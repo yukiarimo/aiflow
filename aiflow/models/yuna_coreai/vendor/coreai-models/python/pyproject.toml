@@ -1,0 +1,95 @@
+[build-system]
+requires = ["hatchling==1.26.3", "pip>=21.3"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coreai-models"
+version = "0.1.0"
+description = "Core AI model export, evaluation, and building blocks for on-device ML"
+keywords = ["coreai", "llm", "machine-learning", "model-conversion", "pytorch", "transformers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.11"
+# Library-style dep constraints: ranges with next-major upper bounds for public-PyPI
+# packages (so downstream projects can resolve their own envs against ours), exact
+# pins for coreai-* dev builds (those use git-commit-style versions, not semver,
+# so ranges don't apply). The exact versions we test against are recorded in
+# `uv.lock` at the workspace root.
+dependencies = [
+    "accelerate>=1.12,<2.0",
+    "coreai-core==1.0.0b1",
+    "coreai-torch==0.4.0",
+    "coreai-opt==0.2.0",
+    "torch==2.9.0",
+    "numpy>=2.2,<3.0",
+    "tqdm>=4.67,<5.0",
+    "rich>=14.0,<15.0",
+    "transformers>=4.57,<5.0",
+    "huggingface-hub>=0.34,<1.0",
+    "safetensors>=0.5,<1.0",
+    "sentencepiece>=0.2,<1.0",
+    "tokenizers>=0.22,<1.0",
+    "diffusers>=0.37,<1.0",
+]
+
+[project.scripts]
+"coreai.llm.export" = "coreai_models.llm.export:main"
+"coreai.llm.eval" = "coreai_models.llm.eval:main"
+"coreai.diffusion.export" = "coreai_models.diffusion.export:main"
+"coreai.model.registry" = "coreai_models.model_registry:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coreai_models"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+]
+
+# Note: dev/test/lint dependency groups live in the workspace root pyproject.toml
+# (../pyproject.toml). They apply to the whole workspace, not just this package.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["coreai_models"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+check_untyped_defs = true
+exclude = [
+    "build/",
+    "dist/",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

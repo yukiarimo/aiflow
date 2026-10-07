@@ -4,43 +4,41 @@ import torchaudio
 
 
 class MelSpectrogramFeatures(torch.nn.Module):
-	"""
-    Log-mel-spectrogram feature extractor. Defaults are tuned for 48 kHz high-pitched vocals (n_fft=2048, hop_length=512, n_mels=128).
-
-    Args:
-        sample_rate: Audio sampling rate.
-        n_fft: Size of the FFT.
-        hop_length: Hop size between frames.
-        n_mels: Number of mel bands.
-        f_min: Lowest frequency (Hz) of the mel filterbank.
-        f_max: Highest frequency (Hz) of the mel filterbank. None means Nyquist (sample_rate / 2).
-        padding: Type of padding. Options are "center" or "same".
-    """
-	def __init__(self, sample_rate=48000, n_fft=2048, hop_length=512, n_mels=128, f_min=0.0, f_max=None, padding="center", ):
+	"""Log-mel feature extractor. Same grid as StyleTTS: 48 kHz, n_fft 2048, hop 256, 128 mels, then (log(mel + 1e-5) - mel_mean) / mel_std.
+	:param sample_rate: Audio sampling rate.
+	:param n_fft: Size of the FFT.
+	:param hop_length: Hop size between frames.
+	:param n_mels: Number of mel bands.
+	:param f_min: Lowest frequency (Hz) of the mel filterbank.
+	:param f_max: Highest frequency (Hz) of the mel filterbank. None means Nyquist (sample_rate / 2).
+	:param padding: Type of padding. Options are "center" or "same"."""
+	def __init__(self, sample_rate=48000, n_fft=2048, hop_length=256, n_mels=128, f_min=0.0, f_max=None, padding="same", mel_mean=-4.0, mel_std=4.0, ):
 		super().__init__()
 		if padding not in ["center", "same"]:
 			raise ValueError("Padding must be 'center' or 'same'.")
 		self.padding = padding
-		self.mel_spec = torchaudio.transforms.MelSpectrogram(sample_rate=sample_rate, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, f_min=f_min, f_max=f_max, center=padding == "center", power=1, )
+		self.mel_mean = None if mel_mean is None else float(mel_mean)
+		self.mel_std = None if mel_std is None else float(mel_std)
+		if f_max is None:
+			f_max = sample_rate / 2
+		self.mel_spec = torchaudio.transforms.MelSpectrogram(sample_rate=sample_rate, n_fft=n_fft, win_length=n_fft, hop_length=hop_length, n_mels=n_mels, f_min=f_min, f_max=f_max, center=padding == "center", power=1, )
 
 	def forward(self, audio):
 		if self.padding == "same":
 			pad = self.mel_spec.win_length - self.mel_spec.hop_length
 			audio = torch.nn.functional.pad(audio, (pad // 2, pad // 2), mode="reflect")
 		mel = self.mel_spec(audio)
-		features = safe_log(mel)
+		features = torch.log(1e-5 + mel)
+		if self.mel_mean is not None:
+			features = (features - self.mel_mean) / self.mel_std
 		return features
 
 
 class ConvNeXtBlock(nn.Module):
-	"""
-	ConvNeXt Block to 1D audio signal.
-
-    Args:
-        dim: Number of input channels.
-        intermediate_dim: Dimensionality of the intermediate layer.
-        layer_scale_init_value: Initial value for the layer scale. None means no scaling.
-    """
+	"""ConvNeXt Block to 1D audio signal.
+	:param dim: Number of input channels.
+	:param intermediate_dim: Dimensionality of the intermediate layer.
+	:param layer_scale_init_value: Initial value for the layer scale. None means no scaling."""
 	def __init__(self, dim, intermediate_dim, layer_scale_init_value):
 		super().__init__()
 		self.dwconv = nn.Conv1d(dim, dim, kernel_size=7, padding=3, groups=dim)  # depthwise conv
@@ -71,16 +69,12 @@ def safe_log(x, clip_val=1e-7):
 
 
 class VocosBackbone(nn.Module):
-	"""
-    Vocos backbone module built with ConvNeXt blocks. Preserves the same temporal resolution across all layers.
-
-    Args:
-        input_channels: Number of input feature channels (the number of mel bands).
-        dim: Hidden dimension of the model.
-        intermediate_dim: Intermediate dimension used in ConvNeXtBlock.
-        num_layers: Number of ConvNeXtBlock layers.
-        layer_scale_init_value: Initial value for layer scaling. Defaults to `1 / num_layers`.
-    """
+	"""Vocos backbone module built with ConvNeXt blocks. Preserves the same temporal resolution across all layers.
+	:param input_channels: Number of input feature channels (the number of mel bands).
+	:param dim: Hidden dimension of the model.
+	:param intermediate_dim: Intermediate dimension used in ConvNeXtBlock.
+	:param num_layers: Number of ConvNeXtBlock layers.
+	:param layer_scale_init_value: Initial value for layer scaling. Defaults to `1 / num_layers`."""
 	def __init__(self, input_channels, dim, intermediate_dim, num_layers, layer_scale_init_value=None):
 		super().__init__()
 		self.input_channels = input_channels
@@ -107,15 +101,11 @@ class VocosBackbone(nn.Module):
 
 
 class ISTFT(nn.Module):
-	"""
-    Custom implementation of ISTFT since torch.istft doesn't allow custom padding (other than `center=True`) with windowing. This is because the NOLA (Nonzero Overlap Add) check fails at the edges. Specifically, in the context of neural vocoding we are interested in "same" padding analogous to CNNs. The NOLA constraint is met as we trim padded samples anyway.
-
-    Args:
-        n_fft: Size of Fourier transform.
-        hop_length: The distance between neighboring sliding window frames.
-        win_length: The size of window frame and STFT filter.
-        padding: Type of padding. Options are "center" or "same".
-    """
+	"""Custom implementation of ISTFT since torch.istft doesn't allow custom padding (other than `center=True`) with windowing. This is because the NOLA (Nonzero Overlap Add) check fails at the edges. Specifically, in the context of neural vocoding we are interested in "same" padding analogous to CNNs. The NOLA constraint is met as we trim padded samples anyway.
+	:param n_fft: Size of Fourier transform.
+	:param hop_length: The distance between neighboring sliding window frames.
+	:param win_length: The size of window frame and STFT filter.
+	:param padding: Type of padding. Options are "center" or "same"."""
 	def __init__(self, n_fft, hop_length, win_length, padding="same"):
 		super().__init__()
 		if padding not in ["center", "same"]:
@@ -128,19 +118,11 @@ class ISTFT(nn.Module):
 		self.register_buffer("window", window)
 
 	def forward(self, spec):
-		"""
-        Compute the Inverse Short Time Fourier Transform (ISTFT) of a complex spectrogram.
-
-        Args:
-            spec: Input complex spectrogram of shape (B, N, T), where B is the batch size,
-                N is the number of frequency bins, and T is the number of time frames.
-
-        Returns:
-            Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal.
-        """
+		"""Compute the Inverse Short Time Fourier Transform (ISTFT) of a complex spectrogram.
+		:param spec: Input complex spectrogram of shape (B, N, T), where B is the batch size, N is the number of frequency bins, and T is the number of time frames.
+		:return: Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal."""
 		if self.padding == "center":
-			# Fallback to pytorch native implementation
-			return torch.istft(spec, self.n_fft, self.hop_length, self.win_length, self.window, center=True)
+			return torch.istft(spec, self.n_fft, self.hop_length, self.win_length, self.window, center=True)  # Fallback to pytorch native implementation
 		elif self.padding == "same":
 			pad = (self.win_length - self.hop_length) // 2
 		else:
@@ -149,36 +131,27 @@ class ISTFT(nn.Module):
 		assert spec.dim() == 3, "Expected a 3D tensor as input"
 		B, N, T = spec.shape
 
-		# Inverse FFT
-		ifft = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")
+		ifft = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")  # Inverse FFT
 		ifft = ifft * self.window[None, :, None]
 
-		# Overlap and Add
-		output_size = (T - 1) * self.hop_length + self.win_length
+		output_size = (T - 1) * self.hop_length + self.win_length  # Overlap and Add
 		y = torch.nn.functional.fold(ifft, output_size=(1, output_size), kernel_size=(1, self.win_length), stride=(1, self.hop_length), )[:, 0, 0, pad:-pad]
 
-		# Window envelope
-		window_sq = self.window.square().expand(1, T, -1).transpose(1, 2)
+		window_sq = self.window.square().expand(1, T, -1).transpose(1, 2)  # Window envelope
 		window_envelope = torch.nn.functional.fold(window_sq, output_size=(1, output_size), kernel_size=(1, self.win_length), stride=(1, self.hop_length), ).squeeze()[pad:-pad]
 
-		# Normalize
-		assert (window_envelope > 1e-11).all()
+		assert (window_envelope > 1e-11).all()  # Normalize
 		y = y / window_envelope
 
 		return y
 
 
 class ISTFTHead(torch.nn.Module):
-	"""
-    ISTFT Head module for predicting STFT complex coefficients.
-
-    Args:
-        dim: Hidden dimension of the model.
-        n_fft: Size of Fourier transform.
-        hop_length: The distance between neighboring sliding window frames, which should align with
-            the resolution of the input features.
-        padding: Type of padding. Options are "center" or "same".
-    """
+	"""ISTFT Head module for predicting STFT complex coefficients.
+	:param dim: Hidden dimension of the model.
+	:param n_fft: Size of Fourier transform.
+	:param hop_length: The distance between neighboring sliding window frames, which should align with the resolution of the input features.
+	:param padding: Type of padding. Options are "center" or "same"."""
 	def __init__(self, dim, n_fft, hop_length, padding="center"):
 		super().__init__()
 		out_dim = n_fft + 2
@@ -186,20 +159,13 @@ class ISTFTHead(torch.nn.Module):
 		self.istft = ISTFT(n_fft=n_fft, hop_length=hop_length, win_length=n_fft, padding=padding)
 
 	def forward(self, x):
-		"""
-        Args:
-            x: Input tensor of shape (B, L, H), where B is the batch size,
-                L is the sequence length, and H denotes the model dimension.
-
-        Returns:
-            Reconstructed time-domain audio signal of shape (B, T).
-        """
+		""":param x: Input tensor of shape (B, L, H), where B is the batch size, L is the sequence length, and H denotes the model dimension.
+		:return: Reconstructed time-domain audio signal of shape (B, T)."""
 		x = self.out(x).transpose(1, 2)
 		mag, p = x.chunk(2, dim=1)
 		mag = torch.exp(mag)
 		mag = torch.clip(mag, max=1e2)  # safeguard to prevent excessively large magnitudes
-		# wrapping happens here. These two lines produce the real and imaginary value
-		real = torch.cos(p)
+		real = torch.cos(p)  # wrapping happens here. These two lines produce the real and imaginary value
 		imag = torch.sin(p)
 		S = mag * (real + 1j * imag)
 		audio = self.istft(S)

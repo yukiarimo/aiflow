@@ -17,14 +17,10 @@ class EmbeddingGenerator:
 	def get_embedding(self, text):
 		inputs = self.processor(text=[text], images=None, return_tensors="pt", padding=True)
 		input_ids = mx.array(np.array(inputs['input_ids']))
-
 		text_embeddings, _ = self.model.get_input_embeddings(input_ids=input_ids, pixel_values=None)
-
-		# Mean pooling and normalization
-		averaged_embedding = mx.mean(text_embeddings, axis=1).squeeze().astype(mx.float32)
+		averaged_embedding = mx.mean(text_embeddings, axis=1).squeeze().astype(mx.float32)  # mean pool
 		norm = mx.linalg.norm(averaged_embedding) + 1e-8
 		normalized_embedding = averaged_embedding / norm
-
 		return np.array(normalized_embedding, dtype=np.float32)
 
 
@@ -45,9 +41,8 @@ class StateModule(nn.Module):
 		self.emotion_names = config["emotion_names"]
 		mem_size = config["memory_hidden_size"]
 		state_size = config["state_hidden_size"]
-
-		# Predicts all 6 emotions at once (Massive optimization over ModuleDict)
-		self.network = nn.Sequential(nn.Linear(mem_size, state_size), nn.LayerNorm(state_size), nn.GELU(), nn.Dropout(config["dropout_rate"]), nn.Linear(state_size, len(self.emotion_names)), nn.Tanh())  # Output bounded to [-1, 1]
+		# all 6 emotions at once (avoids ModuleDict); Tanh → [-1, 1]
+		self.network = nn.Sequential(nn.Linear(mem_size, state_size), nn.LayerNorm(state_size), nn.GELU(), nn.Dropout(config["dropout_rate"]), nn.Linear(state_size, len(self.emotion_names)), nn.Tanh())
 
 	def forward(self, processed_memory):
 		return self.network(processed_memory)
@@ -62,13 +57,10 @@ class GatedMemoryUpdate(nn.Module):
 
 	def forward(self, memory_embedding, input_embedding):
 		combined = torch.cat([memory_embedding, input_embedding], dim=1)
-
 		z = torch.sigmoid(self.update_gate(combined))
 		r = torch.sigmoid(self.reset_gate(combined))
-
 		candidate_input = torch.cat([r * memory_embedding, input_embedding], dim=1)
 		h_tilde = torch.tanh(self.candidate(candidate_input))
-
 		new_memory = (1 - z) * memory_embedding + z * h_tilde
 		return new_memory
 
@@ -80,7 +72,6 @@ class KokoroModel(nn.Module):
 		self.state_module = StateModule(config)
 		self.gated_memory_update = GatedMemoryUpdate(config["embedding_dimensions"])
 		self.emotion_names = config["emotion_names"]
-
 		for m in self.modules():
 			if isinstance(m, nn.Linear):
 				nn.init.xavier_uniform_(m.weight)
@@ -91,5 +82,4 @@ class KokoroModel(nn.Module):
 		processed_memory = self.memory_module(memory_embedding)
 		emotion_tensor = self.state_module(processed_memory)
 		new_memory = self.gated_memory_update(memory_embedding, input_embedding)
-
 		return emotion_tensor, new_memory

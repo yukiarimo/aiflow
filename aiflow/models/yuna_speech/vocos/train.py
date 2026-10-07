@@ -1,9 +1,10 @@
 import argparse
 import json
+from pathlib import Path
 import torch
 from pytorch_lightning import Trainer, seed_everything, LightningDataModule, Callback
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, ModelSummary
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import CSVLogger
 from .models import VocosBackbone, MelSpectrogramFeatures, safe_log, ISTFTHead
 import numpy as np
 import torchaudio
@@ -88,8 +89,7 @@ class DiscriminatorP(nn.Module):
 	def forward(self, x):
 		x = x.unsqueeze(1)
 		fmap = []
-		# 1d to 2d
-		b, c, t = x.shape
+		b, c, t = x.shape  # 1d to 2d
 		if t % self.period != 0:  # pad first
 			n_pad = self.period - (t % self.period)
 			x = torch.nn.functional.pad(x, (0, n_pad), "reflect")
@@ -235,20 +235,18 @@ def cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps,
 
 class VocosExp(pl.LightningModule):
 	def __init__(self, feature_extractor, backbone, head, sample_rate, initial_learning_rate, mel_loss=None, num_warmup_steps=0, mel_loss_coeff=45, mrd_loss_coeff=0.1, pretrain_mel_steps=0, decay_mel_coeff=False, ):
-		"""
-        Args:
-            feature_extractor: Extracts mel features from audio signals.
-            backbone: Backbone model.
-            head: Fourier head to generate spectral coefficients and reconstruct a waveform.
-            sample_rate: Sampling rate of the audio signals.
-            initial_learning_rate: Initial learning rate for the optimizer.
-            num_warmup_steps: Number of warmup steps for the learning-rate scheduler.
-            mel_loss_coeff: Coefficient for the mel-spectrogram reconstruction loss.
-            mrd_loss_coeff: Coefficient for the multi-resolution discriminator loss.
-            pretrain_mel_steps: Number of steps to pre-train without the GAN objective.
-            decay_mel_coeff: If True, the mel-spectrogram loss coefficient is decayed during training.
-        """
+		""":param feature_extractor: Extracts mel features from audio signals.
+		:param backbone: Backbone model.
+		:param head: Fourier head to generate spectral coefficients and reconstruct a waveform.
+		:param sample_rate: Sampling rate of the audio signals.
+		:param initial_learning_rate: Initial learning rate for the optimizer.
+		:param num_warmup_steps: Number of warmup steps for the learning-rate scheduler.
+		:param mel_loss_coeff: Coefficient for the mel-spectrogram reconstruction loss.
+		:param mrd_loss_coeff: Coefficient for the multi-resolution discriminator loss.
+		:param pretrain_mel_steps: Number of steps to pre-train without the GAN objective.
+		:param decay_mel_coeff: If True, the mel-spectrogram loss coefficient is decayed during training."""
 		super().__init__()
+		self.automatic_optimization = False
 		self.save_hyperparameters(ignore=["feature_extractor", "backbone", "head"])
 		self.feature_extractor = feature_extractor
 		self.backbone = backbone
@@ -279,11 +277,13 @@ class VocosExp(pl.LightningModule):
 		audio_output = self.head(x)
 		return audio_output
 
-	def training_step(self, batch, batch_idx, optimizer_idx):
+	def training_step(self, batch, batch_idx):
+		opt_disc, opt_gen = self.optimizers()
+		sch_disc, sch_gen = self.lr_schedulers()
 		audio_input = batch
 
-		# train discriminator
-		if optimizer_idx == 0 and self.train_discriminator:
+		if self.train_discriminator:
+			opt_disc.zero_grad(set_to_none=True)
 			with torch.no_grad():
 				audio_hat = self(audio_input)
 			audio_input, audio_hat = match_audio_lengths(audio_input, audio_hat)
@@ -297,69 +297,68 @@ class VocosExp(pl.LightningModule):
 			self.log("discriminator/total", loss, prog_bar=True)
 			self.log("discriminator/multi_period_loss", loss_mp)
 			self.log("discriminator/multi_res_loss", loss_mrd)
-			return loss
+			self.manual_backward(loss)
+			opt_disc.step()
 
-		# train generator
-		if optimizer_idx == 1:
-			audio_hat = self(audio_input)
-			audio_input, audio_hat = match_audio_lengths(audio_input, audio_hat)
-			if self.train_discriminator:
-				_, gen_score_mp, fmap_rs_mp, fmap_gs_mp = self.multiperioddisc(y=audio_input, y_hat=audio_hat)
-				_, gen_score_mrd, fmap_rs_mrd, fmap_gs_mrd = self.multiresddisc(y=audio_input, y_hat=audio_hat)
-				loss_gen_mp, list_loss_gen_mp = self.gen_loss(disc_outputs=gen_score_mp)
-				loss_gen_mrd, list_loss_gen_mrd = self.gen_loss(disc_outputs=gen_score_mrd)
-				loss_gen_mp = loss_gen_mp / len(list_loss_gen_mp)
-				loss_gen_mrd = loss_gen_mrd / len(list_loss_gen_mrd)
-				loss_fm_mp = self.feat_matching_loss(fmap_r=fmap_rs_mp, fmap_g=fmap_gs_mp) / len(fmap_rs_mp)
-				loss_fm_mrd = self.feat_matching_loss(fmap_r=fmap_rs_mrd, fmap_g=fmap_gs_mrd) / len(fmap_rs_mrd)
-				self.log("generator/multi_period_loss", loss_gen_mp)
-				self.log("generator/multi_res_loss", loss_gen_mrd)
-				self.log("generator/feature_matching_mp", loss_fm_mp)
-				self.log("generator/feature_matching_mrd", loss_fm_mrd)
-			else:
-				loss_gen_mp = loss_gen_mrd = loss_fm_mp = loss_fm_mrd = 0
+		opt_gen.zero_grad(set_to_none=True)
+		audio_hat = self(audio_input)
+		audio_input, audio_hat = match_audio_lengths(audio_input, audio_hat)
+		if self.train_discriminator:
+			_, gen_score_mp, fmap_rs_mp, fmap_gs_mp = self.multiperioddisc(y=audio_input, y_hat=audio_hat)
+			_, gen_score_mrd, fmap_rs_mrd, fmap_gs_mrd = self.multiresddisc(y=audio_input, y_hat=audio_hat)
+			loss_gen_mp, list_loss_gen_mp = self.gen_loss(disc_outputs=gen_score_mp)
+			loss_gen_mrd, list_loss_gen_mrd = self.gen_loss(disc_outputs=gen_score_mrd)
+			loss_gen_mp = loss_gen_mp / len(list_loss_gen_mp)
+			loss_gen_mrd = loss_gen_mrd / len(list_loss_gen_mrd)
+			loss_fm_mp = self.feat_matching_loss(fmap_r=fmap_rs_mp, fmap_g=fmap_gs_mp) / len(fmap_rs_mp)
+			loss_fm_mrd = self.feat_matching_loss(fmap_r=fmap_rs_mrd, fmap_g=fmap_gs_mrd) / len(fmap_rs_mrd)
+			self.log("generator/multi_period_loss", loss_gen_mp)
+			self.log("generator/multi_res_loss", loss_gen_mrd)
+			self.log("generator/feature_matching_mp", loss_fm_mp)
+			self.log("generator/feature_matching_mrd", loss_fm_mrd)
+		else:
+			loss_gen_mp = loss_gen_mrd = loss_fm_mp = loss_fm_mrd = 0
 
-			mel_loss = self.melspec_loss(audio_hat, audio_input)
-			loss = (loss_gen_mp + self.hparams.mrd_loss_coeff * loss_gen_mrd + loss_fm_mp + self.hparams.mrd_loss_coeff * loss_fm_mrd + self.mel_loss_coeff * mel_loss)
-			self.log("generator/total_loss", loss, prog_bar=True)
-			self.log("mel_loss_coeff", self.mel_loss_coeff)
-			self.log("generator/mel_loss", mel_loss)
+		mel_loss = self.melspec_loss(audio_hat, audio_input)
+		loss = (loss_gen_mp + self.hparams.mrd_loss_coeff * loss_gen_mrd + loss_fm_mp + self.hparams.mrd_loss_coeff * loss_fm_mrd + self.mel_loss_coeff * mel_loss)
+		self.log("generator/total_loss", loss, prog_bar=True)
+		self.log("mel_loss_coeff", self.mel_loss_coeff)
+		self.log("generator/mel_loss", mel_loss)
+		self.manual_backward(loss)
+		opt_gen.step()
+		sch_disc.step()
+		sch_gen.step()
 
-			if self.global_step % 1000 == 0 and self.global_rank == 0:
-				self.logger.experiment.add_audio("train/audio_in", audio_input[0].data.cpu(), self.global_step, self.hparams.sample_rate)
-				self.logger.experiment.add_audio("train/audio_pred", audio_hat[0].data.cpu(), self.global_step, self.hparams.sample_rate)
-				with torch.no_grad():
-					mel = safe_log(self.melspec_loss.mel_spec(audio_input[0]))
-					mel_hat = safe_log(self.melspec_loss.mel_spec(audio_hat[0]))
-				self.logger.experiment.add_image("train/mel_target", plot_spectrogram_to_numpy(mel.data.cpu().numpy()), self.global_step, dataformats="HWC")
-				self.logger.experiment.add_image("train/mel_pred", plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()), self.global_step, dataformats="HWC")
-
-			return loss
+		if self.global_step % 1000 == 0 and self.global_rank == 0:
+			_media(self.logger, "add_audio", "train/audio_in", audio_input[0].data.cpu(), self.global_step, self.hparams.sample_rate)
+			_media(self.logger, "add_audio", "train/audio_pred", audio_hat[0].data.cpu(), self.global_step, self.hparams.sample_rate)
+			with torch.no_grad():
+				mel = safe_log(self.melspec_loss.mel_spec(audio_input[0]))
+				mel_hat = safe_log(self.melspec_loss.mel_spec(audio_hat[0]))
+			_media(self.logger, "add_image", "train/mel_target", plot_spectrogram_to_numpy(mel.data.cpu().numpy()), self.global_step, dataformats="HWC")
+			_media(self.logger, "add_image", "train/mel_pred", plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()), self.global_step, dataformats="HWC")
 
 	def validation_step(self, batch, batch_idx):
 		audio_input = batch
 		audio_hat = self(audio_input)
 		audio_input, audio_hat = match_audio_lengths(audio_input, audio_hat)
 		mel_loss = self.melspec_loss(audio_hat, audio_input)
-		return {"val_loss": mel_loss, "audio_input": audio_input[0], "audio_pred": audio_hat[0]}
+		self.log("val_loss", mel_loss, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
+		if batch_idx == 0:
+			self._val_audio_in = audio_input[0].detach()
+			self._val_audio_pred = audio_hat[0].detach()
 
-	def validation_epoch_end(self, outputs):
-		if self.global_rank == 0:
-			audio_in = outputs[0]["audio_input"]
-			audio_pred = outputs[0]["audio_pred"]
-			self.logger.experiment.add_audio("val_in", audio_in.data.cpu().numpy(), self.global_step, self.hparams.sample_rate)
-			self.logger.experiment.add_audio("val_pred", audio_pred.data.cpu().numpy(), self.global_step, self.hparams.sample_rate)
-			mel_target = safe_log(self.melspec_loss.mel_spec(audio_in))
-			mel_hat = safe_log(self.melspec_loss.mel_spec(audio_pred))
-			self.logger.experiment.add_image("val_mel_target", plot_spectrogram_to_numpy(mel_target.data.cpu().numpy()), self.global_step, dataformats="HWC")
-			self.logger.experiment.add_image("val_mel_hat", plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()), self.global_step, dataformats="HWC")
-		avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-		self.log("val_loss", avg_loss, sync_dist=True)
-
-	@property
-	def global_step(self):
-		"""Override global_step so that it returns the total number of batches processed."""
-		return self.trainer.fit_loop.epoch_loop.total_batch_idx
+	def on_validation_epoch_end(self):
+		if self.global_rank != 0 or not hasattr(self, "_val_audio_in"):
+			return
+		audio_in = self._val_audio_in
+		audio_pred = self._val_audio_pred
+		_media(self.logger, "add_audio", "val_in", audio_in.data.cpu().numpy(), self.global_step, self.hparams.sample_rate)
+		_media(self.logger, "add_audio", "val_pred", audio_pred.data.cpu().numpy(), self.global_step, self.hparams.sample_rate)
+		mel_target = safe_log(self.melspec_loss.mel_spec(audio_in))
+		mel_hat = safe_log(self.melspec_loss.mel_spec(audio_pred))
+		_media(self.logger, "add_image", "val_mel_target", plot_spectrogram_to_numpy(mel_target.data.cpu().numpy()), self.global_step, dataformats="HWC")
+		_media(self.logger, "add_image", "val_mel_hat", plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()), self.global_step, dataformats="HWC")
 
 	def on_train_batch_start(self, *args):
 		if self.global_step >= self.hparams.pretrain_mel_steps:
@@ -379,62 +378,101 @@ class VocosExp(pl.LightningModule):
 			self.mel_loss_coeff = self.base_mel_coeff * mel_loss_coeff_decay(self.global_step + 1)
 
 
-class VocosDataModule(LightningDataModule):
-	def __init__(self, train_params, val_params):
-		super().__init__()
-		self.train_config = train_params
-		self.val_config = val_params
+def _wav_meta(path):
+	import soundfile as sf
+	info = sf.info(str(path))
+	return int(info.frames), int(info.samplerate)
 
-	def _get_dataloder(self, cfg, train):
-		dataset = VocosDataset(cfg, train=train)
-		dataloader = DataLoader(dataset, batch_size=cfg["batch_size"], num_workers=cfg["num_workers"], shuffle=train, pin_memory=True, )
-		return dataloader
+
+def _load_slice(path, start, frames):
+	import soundfile as sf
+	audio, sr = sf.read(str(path), start=int(start), frames=int(frames), dtype="float32", always_2d=True)
+	return torch.from_numpy(np.ascontiguousarray(audio.T)), int(sr)
+
+
+def _wav_splits(wav_dir, sampling_rate, num_samples):
+	"""Every wav under wav_dir, cut into num_samples chunks. A short tail is kept and padded later."""
+	root = Path(wav_dir)
+	paths = sorted(p for p in root.rglob("*") if p.suffix.lower() == ".wav")
+	if not paths:
+		raise FileNotFoundError("no wavs in %s" % root)
+	splits = []
+	for path in paths:
+		n_frames, file_sr = _wav_meta(path)
+		length = n_frames if file_sr == sampling_rate else int(round(n_frames * sampling_rate / float(file_sr)))
+		if length <= 0:
+			continue
+		start = 0
+		while start < length:
+			splits.append((str(path), start, file_sr))
+			start += num_samples
+	if not splits:
+		raise FileNotFoundError("no audio frames in %s" % root)
+	return splits
+
+
+class VocosDataModule(LightningDataModule):
+	def __init__(self, data_cfg):
+		super().__init__()
+		self.cfg = data_cfg
+
+	def setup(self, stage=None):
+		splits = _wav_splits(self.cfg["wav_dir"], int(self.cfg["sampling_rate"]), int(self.cfg["num_samples"]))
+		eval_index = int(self.cfg.get("eval_index", 0)) % len(splits)
+		self.val_set = VocosDataset(self.cfg, [splits[eval_index]], train=False)
+		self.train_set = VocosDataset(self.cfg, [s for i, s in enumerate(splits) if i != eval_index], train=True)
+		print("vocos wavs %s  chunks %d  train %d  eval 1" % (self.cfg["wav_dir"], len(splits), len(self.train_set)), flush=True)
 
 	def train_dataloader(self):
-		return self._get_dataloder(self.train_config, train=True)
+		return DataLoader(self.train_set, batch_size=self.cfg["batch_size"], num_workers=self.cfg["num_workers"], shuffle=True, pin_memory=True)
 
 	def val_dataloader(self):
-		return self._get_dataloder(self.val_config, train=False)
+		return DataLoader(self.val_set, batch_size=1, num_workers=0, shuffle=False)
 
 
 class VocosDataset(Dataset):
-	def __init__(self, cfg, train):
-		with open(cfg["filelist_path"]) as f:
-			self.filelist = f.read().splitlines()
-		self.sampling_rate = cfg["sampling_rate"]
-		self.num_samples = cfg["num_samples"]
+	def __init__(self, cfg, splits, train):
+		self.splits = splits
+		self.sampling_rate = int(cfg["sampling_rate"])
+		self.num_samples = int(cfg["num_samples"])
 		self.train = train
 
 	def __len__(self):
-		return len(self.filelist)
+		return len(self.splits)
 
 	def __getitem__(self, index):
-		audio_path = self.filelist[index]
-		y, sr = torchaudio.load(audio_path)
+		path, start, file_sr = self.splits[index]
+		frames = self.num_samples
+		if file_sr != self.sampling_rate:
+			src_start = int(start * file_sr / self.sampling_rate)
+			src_frames = int(frames * file_sr / self.sampling_rate) + 1
+		else:
+			src_start, src_frames = start, frames
+		y, sr = _load_slice(path, src_start, src_frames)
 		if y.size(0) > 1:
-			y = y.mean(dim=0, keepdim=True)  # mix to mono
-		# Peak-normalize to 0 dB, then apply a random gain (pure torch, no sox dependency).
+			y = y.mean(dim=0, keepdim=True)
+		if sr != self.sampling_rate:
+			y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
+		y = y[:, :self.num_samples]
+		if y.size(-1) < self.num_samples:
+			pad_length = self.num_samples - y.size(-1)
+			y = torch.cat((y, y.new_zeros(1, pad_length)), dim=1)
 		gain_db = np.random.uniform(-6.0, -1.0) if self.train else -3.0
 		y = y / y.abs().max().clamp(min=1e-8)
 		y = y * (10**(gain_db / 20.0))
-		if sr != self.sampling_rate:
-			y = torchaudio.functional.resample(y, orig_freq=sr, new_freq=self.sampling_rate)
-		if y.size(-1) < self.num_samples:
-			pad_length = self.num_samples - y.size(-1)
-			padding_tensor = y.repeat(1, 1 + pad_length // y.size(-1))
-			y = torch.cat((y, padding_tensor[:, :pad_length]), dim=1)
-		elif self.train:
-			start = np.random.randint(low=0, high=y.size(-1) - self.num_samples + 1)
-			y = y[:, start:start + self.num_samples]
-		else:
-			y = y[:, :self.num_samples]  # During validation, always take the first segment for determinism
-
 		return y[0]
+
+
+def _media(logger, name, *args, **kwargs):
+	fn = getattr(getattr(logger, "experiment", None), name, None)
+	if fn is not None:
+		fn(*args, **kwargs)
 
 
 def parse_args():
 	parser = argparse.ArgumentParser(description="Train Vocos.")
 	parser.add_argument("-c", "--config", default="config.json", help="Path to config.json.")
+	parser.add_argument("--ckpt", default="", help="Lightning checkpoint to resume from (weights, optimizer, step). Usually logs/.../checkpoints/last.ckpt.")
 	return parser.parse_args()
 
 
@@ -442,18 +480,25 @@ def main():
 	args = parse_args()
 	with open(args.config) as f:
 		config = json.load(f)
+	ckpt = (args.ckpt or "").strip()
+	if ckpt:
+		ckpt = str(Path(ckpt).expanduser())
+		if not Path(ckpt).is_file():
+			raise SystemExit("ckpt not found: %s" % ckpt)
+		print("resume %s" % ckpt, flush=True)
 	seed_everything(config["seed"], workers=True)
-	datamodule = VocosDataModule(train_params=config["data"]["train"], val_params=config["data"]["val"])
+	torch.set_float32_matmul_precision("high")
+	datamodule = VocosDataModule(config["data"])
 	feature_extractor = MelSpectrogramFeatures(**config["feature_extractor"])
 	backbone = VocosBackbone(**config["backbone"])
 	head = ISTFTHead(**config["head"])
 	model = VocosExp(feature_extractor=feature_extractor, backbone=backbone, head=head, mel_loss=config["feature_extractor"], **config["model"], )
 	trainer_cfg = config["trainer"]
-	logger = TensorBoardLogger(save_dir=trainer_cfg["save_dir"])
+	logger = CSVLogger(save_dir=trainer_cfg["save_dir"])
 	callbacks = [LearningRateMonitor(), ModelSummary(max_depth=2), ModelCheckpoint(monitor="val_loss", filename="vocos_{epoch}_{step}_{val_loss:.4f}", save_top_k=trainer_cfg["save_top_k"], save_last=True, ), GradNormCallback(), ]
 	use_gpu = torch.cuda.is_available()
 	trainer = Trainer(logger=logger, callbacks=callbacks, accelerator="gpu" if use_gpu else "cpu", devices=1, precision=trainer_cfg["precision"] if use_gpu else 32, max_steps=trainer_cfg["max_steps"], limit_val_batches=trainer_cfg["limit_val_batches"], log_every_n_steps=trainer_cfg["log_every_n_steps"], )
-	trainer.fit(model=model, datamodule=datamodule)
+	trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt or None)
 
 
 if __name__ == "__main__":

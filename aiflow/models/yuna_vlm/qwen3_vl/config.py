@@ -43,7 +43,6 @@ class TextConfig(BaseModelConfig):
 		self.tie_word_embeddings = tie_word_embeddings
 		self.attention_bias = attention_bias
 		self.hidden_act = hidden_act
-
 		self.rope_scaling = rope_scaling if rope_scaling is not None else {"type": "default", "mrope_section": [24, 20, 20]}
 
 		if self.rope_scaling:

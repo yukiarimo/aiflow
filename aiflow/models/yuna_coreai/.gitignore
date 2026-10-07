@@ -1,0 +1,4 @@
+vendor/**/.build/
+vendor/**/.swiftpm/
+__pycache__/
+*.pyc

@@ -3,32 +3,33 @@ import importlib
 import inspect
 import json
 import logging
+import re
 from io import BytesIO
 from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 import requests
-import soundfile as sf
 from mlx.utils import tree_flatten
 from PIL import Image, ImageOps
 from transformers import AutoProcessor
+from aiflow.models.yuna_audio.utils import load_audio_np, resample_audio as _resample_audio
+from aiflow.models.yuna_audio.audio_encoder import get_feat_extract_output_lengths
 from .base import BaseImageProcessor
 from .yuna_tokenizer import load_tokenizer
-from .lora import apply_lora_layers
 
-MODEL_REMAPPING = {"qwen3_vl": "qwen3_vl"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 def skip_multimodal_module(path):
-	return ("vision_model" in path or "vision_tower" in path or "vl_connector" in path or "sam_model" in path or "audio_model" in path or "audio_tower" in path or "code_predictor" in path)
+	return ("vision_model" in path or "vision_tower" in path or "audio_model" in path or "audio_tower" in path)
 
 
 def get_model_and_args(config):
 	model_type = config["model_type"].lower()
-	model_type = MODEL_REMAPPING.get(model_type, model_type)
+	if model_type == "qwen3_avl":
+		model_type = "qwen3_avlm"
 
 	try:
 		arch = importlib.import_module(f".{model_type}", package=__package__)
@@ -72,25 +73,18 @@ def load_model(model_path, lazy=False, **kwargs):
 	config.setdefault("audio_config", {})
 
 	model_config = model_class.ModelConfig.from_dict(config)
-	modules = ["text", "vision", "perceiver", "projector", "audio"]
-	model_config = update_module_configs(model_config, model_class, config, modules)
+	model_config = update_module_configs(model_config, model_class, config, ["text", "vision", "audio"])
 
 	model = model_class.Model(model_config)
 
 	if not is_mlx_format:
 		weights = sanitize_weights(model, weights)
-		if hasattr(model, "thinker") and hasattr(model.thinker, "sanitize"):
-			weights = sanitize_weights(model.thinker, weights)
-			weights = sanitize_weights(model.thinker.vision_tower, weights)
-			weights = sanitize_weights(model.thinker.audio_tower, weights)
-			weights = sanitize_weights(model.thinker.language_model, weights)
-			weights = sanitize_weights(model.code2wav, weights)
-			weights = sanitize_weights(model.talker, weights)
-		else:
-			weights = sanitize_weights(model_class.VisionModel, weights, model_config.vision_config)
-			weights = sanitize_weights(model_class.LanguageModel, weights, model_config.text_config)
-			if hasattr(model_class, "AudioModel"):
-				weights = sanitize_weights(model_class.AudioModel, weights, model_config.audio_config)
+		weights = sanitize_weights(model_class.VisionModel, weights, model_config.vision_config)
+		weights = sanitize_weights(model_class.LanguageModel, weights, model_config.text_config)
+		if hasattr(model_class, "AudioModel"):
+			weights = sanitize_weights(model_class.AudioModel, weights, model_config.audio_config)
+		elif hasattr(model_class, "AudioEncoder"):
+			weights = sanitize_weights(model_class.AudioEncoder, weights, model_config.audio_config)
 
 	if (quantization := config.get("quantization", None)) is not None:
 		skip_vision = config.get("vision_config", {}).get("skip_vision", False)
@@ -133,21 +127,11 @@ def update_module_configs(model_config, model_class, config, modules):
 	return model_config
 
 
-def load(path_or_hf_repo, adapter_path=None, lazy=False, **kwargs):
+def load(path_or_hf_repo, lazy=False, **kwargs):
 	model_path = get_model_path(path_or_hf_repo)
 	model = load_model(model_path, lazy, **kwargs)
-
-	if adapter_path is not None:
-		model = apply_lora_layers(model, adapter_path)
-		model.eval()
-
-	image_processor = load_image_processor(model_path, **kwargs)
 	eos_token_id = getattr(model.config, "eos_token_id", None)
 	processor = load_processor(model_path, True, eos_token_ids=eos_token_id, **kwargs)
-
-	if image_processor is not None:
-		processor.image_processor = image_processor
-
 	return model, processor
 
 
@@ -176,31 +160,13 @@ def load_config(model_path, **kwargs):
 		raise FileNotFoundError(f"Config not found at {model_path}") from exc
 
 
-def load_image_processor(model_path, **kwargs):
-	if isinstance(model_path, str):
-		model_path = get_model_path(model_path)
-
-	if not kwargs:
-		config = load_config(model_path, trust_remote_code=True)
-	else:
-		config = load_config(model_path, **kwargs)
-
-	model_class, _ = get_model_and_args(config)
-	image_processor = None
-
-	if hasattr(model_class, "ImageProcessor"):
-		init_signature = inspect.signature(model_class.ImageProcessor.__init__)
-
-		if "config" in init_signature.parameters:
-			image_processor = model_class.ImageProcessor(config=config)
-		else:
-			image_processor = model_class.ImageProcessor()
-
-	return image_processor
-
-
 def load_processor(model_path, add_detokenizer=True, eos_token_ids=None, **kwargs):
 	processor = AutoProcessor.from_pretrained(model_path, use_fast=True, **kwargs)
+	if getattr(processor, "feature_extractor", None) is None:
+		pre = Path(model_path) / "preprocessor_config.json"
+		if pre.exists():
+			from transformers import WhisperFeatureExtractor
+			processor.feature_extractor = WhisperFeatureExtractor.from_pretrained(model_path)
 	if add_detokenizer:
 		detokenizer_class = load_tokenizer(model_path, return_tokenizer=False)
 		tokenizer_obj = (processor.tokenizer if hasattr(processor, "tokenizer") else processor)
@@ -324,8 +290,7 @@ def process_image(img, resize_shape, image_processor):
 	if isinstance(img, str):
 		img = load_image(img)
 
-	# Hard limit boundaries to prevent MLX from spawning terminal VRAM explosions on huge files
-	if resize_shape is None:
+	if resize_shape is None:  # hard limit so MLX doesn't VRAM-explode on huge files
 		resize_shape = (448, 448)
 
 	img = resize_image(img, resize_shape)
@@ -333,48 +298,82 @@ def process_image(img, resize_shape, image_processor):
 
 
 def resample_audio(audio, orig_sr, target_sr):
-	if orig_sr == target_sr:
-		return audio
-
-	ratio = target_sr / orig_sr
-
-	if audio.ndim == 1:
-		new_length = int(len(audio) * ratio)
-		old_indices = np.arange(len(audio))
-		new_indices = np.linspace(0, len(audio) - 1, new_length)
-		resampled = np.interp(new_indices, old_indices, audio)
-
-	elif audio.ndim == 2:
-		if audio.shape[0] < audio.shape[1]:
-			audio = audio.T
-		n_samples, n_channels = audio.shape
-		new_length = int(n_samples * ratio)
-		old_indices = np.arange(n_samples)
-		new_indices = np.linspace(0, n_samples - 1, new_length)
-
-		resampled = np.zeros((new_length, n_channels))
-		for i in range(n_channels):
-			resampled[:, i] = np.interp(new_indices, old_indices, audio[:, i])
-	else:
-		raise ValueError(f"Audio array has unsupported shape: {audio.shape}")
-
-	return resampled
+	return _resample_audio(audio, orig_sr, target_sr)
 
 
 def load_audio(file, sr, timeout=10):
-	if file.startswith(("http://", "https://")):
-		try:
-			response = requests.get(file, stream=True, timeout=timeout)
-			response.raise_for_status()
-			audio, sample_rate = sf.read(BytesIO(response.content), always_2d=True)
-		except Exception as e:
-			raise ValueError(f"Failed to load audio from URL: {file} with error {e}") from e
-	else:
-		audio, sample_rate = sf.read(file, always_2d=True)
+	"""Path or URL → mono float32 @ sr via ffmpeg (+ soxr when needed)."""
+	if isinstance(file, str) and file.startswith(("http://", "https://")):
+		response = requests.get(file, stream=True, timeout=timeout)
+		response.raise_for_status()
+		file = response.content
+	return load_audio_np(file, sample_rate=sr, mono=True)
 
-	if sample_rate != sr:
-		audio = resample_audio(audio, sample_rate, sr)
-	return np.array(audio).mean(axis=1)
+
+def expand_marker(text, marker, counts):
+	"""Expand each marker run in order: counts[i] pads for site i."""
+	pattern = re.escape(marker) + "+"
+	sites = list(re.finditer(pattern, text))
+	if len(sites) != len(counts):
+		raise ValueError(f"prompt has {len(sites)} {marker!r} site(s), but got {len(counts)} count(s)")
+	out = text
+	for site, n in zip(reversed(sites), reversed(counts)):
+		out = out[:site.start()] + (marker * int(n)) + out[site.end():]
+	return out
+
+
+def prepare_avlm_inputs(processor, prompts, images=None, audio=None, resize_shape=None, add_special_tokens=False, sampling_rate=16000):
+	"""Build AVLM model inputs: expand <|audio_pad|>, Whisper mel, VL image pads."""
+	text = prompts if isinstance(prompts, str) else prompts[0]
+	out = {}
+	if isinstance(images, list) and not images:
+		images = None
+	if isinstance(audio, list) and not audio:
+		audio = None
+
+	if audio is not None:
+		if not isinstance(audio, list):
+			audio = [audio]
+		fe = getattr(processor, "feature_extractor", None)
+		if fe is None:
+			raise ValueError("AVLM processor missing feature_extractor (Whisper FE); re-merge or set preprocessor_config.json")
+		sr = getattr(fe, "sampling_rate", sampling_rate) or sampling_rate
+		wavs = []
+		for a in audio:
+			if isinstance(a, (str, bytes, bytearray)) or hasattr(a, "read"):
+				wavs.append(load_audio(a, sr=sr))
+			else:
+				wavs.append(np.asarray(a, dtype=np.float32))
+		feats = fe(wavs, sampling_rate=sr, return_attention_mask=True, truncation=False, padding=True, return_tensors="np")
+		input_features = mx.array(feats["input_features"])
+		feature_attention_mask = mx.array(feats["attention_mask"])
+		feat_lens = feature_attention_mask.sum(axis=-1).astype(mx.int32)
+		pad_counts = [int(x) for x in np.array(get_feat_extract_output_lengths(feat_lens))]
+		text = expand_marker(text, "<|audio_pad|>", pad_counts)
+		out["input_features"] = input_features
+		out["feature_attention_mask"] = feature_attention_mask
+		out["audio_pad_counts"] = pad_counts
+
+	if images is not None:
+		if not isinstance(images, list):
+			images = [images]
+		image_processor = getattr(processor, "image_processor", None)
+		pil = [process_image(img, resize_shape, image_processor) for img in images]
+		n_sites = len(re.findall(re.escape("<|image_pad|>") + "+", text))
+		if n_sites != len(pil):
+			raise ValueError(f"prompt has {n_sites} <|image_pad|> site(s), but got {len(pil)} image(s)")
+		proc_out = processor(text=[text], images=pil, return_tensors="np", add_special_tokens=add_special_tokens)
+		out["input_ids"] = mx.array(proc_out["input_ids"])
+		if "attention_mask" in proc_out:
+			out["attention_mask"] = mx.array(proc_out["attention_mask"])
+		out["pixel_values"] = mx.array(proc_out["pixel_values"])
+		if "image_grid_thw" in proc_out:
+			out["image_grid_thw"] = mx.array(proc_out["image_grid_thw"])
+	else:
+		tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+		out["input_ids"] = mx.array([tok.encode(text, add_special_tokens=add_special_tokens)])
+
+	return out
 
 
 def process_inputs(processor, prompts, images=None, audio=None, add_special_tokens=False, padding=True, padding_side="left", return_tensors="mlx", **kwargs):
@@ -466,13 +465,6 @@ def prepare_inputs(processor, images=None, audio=None, prompts=None, image_token
 						padded_images.append(img)
 				images = padded_images
 
-	audio_inputs = None
-	audio_feature_lengths = None
-	is_qwen3_omni_moe = False
-	processor_class_name = (processor.__class__.__name__ if hasattr(processor, "__class__") else "")
-	if ("qwen3" in processor_class_name.lower() and "omni" in processor_class_name.lower()):
-		is_qwen3_omni_moe = True
-
 	if audio is not None:
 		if not isinstance(audio, list):
 			audio = [audio]
@@ -481,22 +473,9 @@ def prepare_inputs(processor, images=None, audio=None, prompts=None, image_token
 			print("\033[33mWarning\033[0m: Single prompt with multiple audio files is not supported yet. Using the first audio file.\n")
 			audio = audio[:1]
 
-		if is_qwen3_omni_moe:
-			audio_arrays = [load_audio(audio_file, sr=processor.feature_extractor.sampling_rate) for audio_file in audio]
-			audio_arrays = [audio_array.astype(np.float32) for audio_array in audio_arrays]
-
-			feature_extractor = getattr(processor, "feature_extractor", None)
-			if feature_extractor is None:
-				raise ValueError("Processor missing feature_extractor for audio prep.")
-
-			audio_inputs = feature_extractor(audio_arrays, sampling_rate=feature_extractor.sampling_rate, padding=True, return_attention_mask=True)
-			audio_feature_lengths = np.sum(audio_inputs["attention_mask"], axis=-1, dtype=np.int32)
-		else:
-			feature_extractor = getattr(processor, "feature_extractor", None)
-			if feature_extractor is not None:
-				audio = [load_audio(audio_file, sr=feature_extractor.sampling_rate) for audio_file in audio]
-			else:
-				audio = [load_audio(audio_file, sr=processor.feature_extractor.sampling_rate) for audio_file in audio]
+		fe = getattr(processor, "feature_extractor", None)
+		sr = getattr(fe, "sampling_rate", 16000) if fe is not None else 16000
+		audio = [load_audio(audio_file, sr=sr) for audio_file in audio]
 
 	model_inputs = {}
 
@@ -540,11 +519,6 @@ def prepare_inputs(processor, images=None, audio=None, prompts=None, image_token
 				else:
 					model_inputs[key] = mx.array(value)
 
-	if audio_inputs is not None:
-		model_inputs["input_features"] = mx.array(audio_inputs["input_features"])
-		model_inputs["feature_attention_mask"] = mx.array(audio_inputs["attention_mask"]).astype(mx.int32)
-		model_inputs["audio_feature_lengths"] = mx.array(audio_feature_lengths, dtype=mx.int32)
-
 	return model_inputs
 
 
@@ -581,21 +555,3 @@ class StoppingCriteria:
 
 	def __call__(self, input_ids):
 		return input_ids in self.eos_token_ids
-
-
-def print_array_report(t, label) -> dict:
-	mean_val = mx.mean(t)
-	std_val = mx.std(t)
-	min_val = mx.min(t)
-	max_val = mx.max(t)
-
-	report = {"shape": f"{tuple(t.shape)}", "dtype": str(t.dtype), "value": repr(t), "mean": f"array({mean_val}, dtype={t.dtype})", "std": f"array({std_val}, dtype={t.dtype})", "min": f"array({min_val}, dtype={t.dtype})", "max": f"array({max_val}, dtype={t.dtype})", "label": label if label else "array"}
-
-	print("{")
-	for key, value in report.items():
-		if key == "value":
-			print(f" '{key}': {value},")
-		else:
-			print(f" '{key}': {repr(value)},")
-	print("}")
-	return report

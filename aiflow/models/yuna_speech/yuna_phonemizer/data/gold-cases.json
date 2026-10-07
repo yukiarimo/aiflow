@@ -1,0 +1,233 @@
+[
+	{
+		"id": "EN01",
+		"lid": "en-us",
+		"src": "Wait… she said — \"don't\" (please) — «now», “then”: ready?!",
+		"raw": "wˈeɪt… ʃiː sˈɛd — \"dˈoʊnt\" (plˈiːz) — «nˈaʊ», “ðˈɛn”: ɹˈɛdi?!",
+		"clean": "wˈeɪt… ʃiː sˈɛd—dˈoʊnt, plˈiːz,—nˈaʊ, ðˈɛn: ɹˈɛdi?"
+	},
+	{
+		"id": "EN02",
+		"lid": "en-us",
+		"src": "¡Hello! ¿Ready? {whisper} (aside) [note]",
+		"raw": "¡həlˈoʊ! ¿ɹˈɛdi? {wˈɪspɚ} (ɐsˈaɪd) [nˈoʊt]",
+		"clean": "¡həlˈoʊ! ¿ɹˈɛdi? {wˈɪspɚ}, ɐsˈaɪd, nˈoʊt,"
+	},
+	{
+		"id": "EN03",
+		"lid": "en-us",
+		"src": "Hold on... then . . . go… stay.",
+		"raw": "hˈoʊld ˈɑːn... ðˈɛn . . . ɡˈoʊ… stˈeɪ.",
+		"clean": "hˈoʊld ˈɑːn—ðˈɛn—ɡˈoʊ… stˈeɪ."
+	},
+	{
+		"id": "EN04",
+		"lid": "en-us",
+		"src": "See pages 3–5, then 3-7, then 3 - 9, then 3—11.",
+		"raw": "sˈiː pˈeɪdʒᵻz θɹˈiː fˈaɪv, ðˈɛn θɹˈiː dˈæʃ sˈɛvən, ðˈɛn θɹˈiː nˈaɪn, ðˈɛn θɹˈiː—ɪlˈɛvən.",
+		"clean": "sˈiː pˈeɪdʒᵻz θɹˈiː tə fˈaɪv, ðˈɛn θɹˈiː tə sˈɛvən, ðˈɛn θɹˈiː—nˈaɪn, ðˈɛn θɹˈiː—ɪlˈɛvən."
+	},
+	{
+		"id": "EN05",
+		"lid": "en-us",
+		"src": "Pay $1, $2, $1.5K, 99€, £10, ¥500, 7₽, and 25$.",
+		"raw": "pˈeɪ dˈɑːlɚ wˈʌn, dˈɑːlɚ tˈuː, dˈɑːlɚ wˈʌn.fˈaɪv kˈeɪ, nˈaɪntinˈaɪn jˈʊɹɹoʊz, pˈaʊnd tˈɛn, jˈɛn fˈaɪvhˈʌndɹəd, sˈɛvən, ænd twˈɛntifˈaɪv dˈɑːlɚ.",
+		"clean": "pˈeɪ wˈʌn dˈɑːlɚ, tˈuː dˈɑːlɚz, wˈʌn pˈɔɪnt fˈaɪv θˈaʊzənd dˈɑːlɚz, nˈaɪntinˈaɪn jˈʊɹɹoʊz, tˈɛn pˈaʊndz, fˈaɪv θˈaʊzənd sˈɛvən jˈɛn, ænd twˈɛntifˈaɪv dˈɑːlɚz."
+	},
+	{
+		"id": "EN06",
+		"lid": "en-us",
+		"src": "About 1,234,567 plus 2.5e-3 and 10K versus 3.14.",
+		"raw": "ɐbˌaʊt wˈʌn,tˈuːhˈʌndɹəd θˈɜːɾifˈoːɹ,fˈaɪvhˈʌndɹəd sˈɪkstisˈɛvən plˈʌs tˈuː.fˈaɪv ˈiː θɹˈiː ænd tˈɛn kˈeɪ vˈɜːsɪz θɹˈiː.fˈoːɹtiːn.",
+		"clean": "ɐbˌaʊt wˈʌn mˈɪliən tˈuːhˈʌndɹəd θˈɜːɾifˈoːɹ θˈaʊzənd fˈaɪvhˈʌndɹəd sˈɪkstisˈɛvən plˈʌs tˈuː pˈɔɪnt fˈaɪv tˈaɪmz tˈɛn tə ðə mˈaɪnəs θɹˈiː ænd tˈɛn θˈaʊzənd vˈɜːsɪz θɹˈiː pˈɔɪnt wˈʌn fˈoːɹ."
+	},
+	{
+		"id": "EN07",
+		"lid": "en-us",
+		"src": "Dr. J. A. Smith met Mrs. Jones at St. Mary Blvd. at 3 p.m.; he ain't ready, e.g. now.",
+		"raw": "dˈɑːktɚ. dʒˈeɪ. ˈeɪ. smˈɪθ mˈɛt mˈɪsɪz. dʒˈoʊnz æt sənt. mˈɛɹi bˌiːˌɛlvˌiːdˈiː. æt θɹˈiː pˈiː.ˈɛm.; hiː ˈeɪnt ɹˈɛdi, ˈiː.dʒˈiː. nˈaʊ.",
+		"clean": "dˈɑːktɚ dʒˈeɪ ɐ smˈɪθ mˈɛt mˈɪsəs dʒˈoʊnz æt sˈeɪnt mˈɛɹi bˈuːlɪvˌɑːɹd æt θɹˈiː pˌiːˈɛm; hiː ɐm nˌɑːt ɹˈɛdi, fɔːɹ ɛɡzˈæmpəl nˈaʊ."
+	},
+	{
+		"id": "EN08",
+		"lid": "en-us",
+		"src": "Read chapter XII, not IV, nor DC, nor I, after AD 12.",
+		"raw": "ɹˈiːd tʃˈæptɚ ɹˌoʊmən twˈɛlv, nˌɑːt ɹˌoʊmən fˈoːɹ, nˈɔːɹ dˌiːsˈiː, nˈɔːɹ ˈaɪ, ˈæftɚɹ ˌeɪdˈiː twˈɛlv.",
+		"clean": "ɹˈiːd tʃˈæptɚ twˈɛlv, nˌɑːt ɹˌoʊmən fˈoːɹ, nˈɔːɹ dˌiːsˈiː, nˈɔːɹ ˈaɪ, ˈæftɚɹ ˌeɪdˈiː twˈɛlv."
+	},
+	{
+		"id": "EN09",
+		"lid": "en-us",
+		"src": "See https://example.com/a and www.test.org *now*.",
+		"raw": "sˈiː ˌeɪtʃtˌiːtˈiːpˌiːˈɛs:slˈæʃslæʃ ɛɡzˈæmpəl.kˈɑːm slˈæʃ ɐ ænd dˌʌbəljˌuːdˌʌbəljˌuːdˈʌbəljˌuː.tˈɛst.ˈɔːɹɡ ˈæstɚɹˌɪsk nˈaʊ ˈæstɚɹˌɪsk.",
+		"clean": "sˈiː ænd nˈaʊ."
+	},
+	{
+		"id": "EN10",
+		"lid": "en-us",
+		"src": "The window-pane cracked; twenty-one left.",
+		"raw": "ðə wˈɪndoʊpˈeɪn kɹˈækt; twˈɛntiwˈʌn lˈɛft.",
+		"clean": "ðə wˈɪndoʊpˈeɪn kɹˈækt; twˈɛntiwˈʌn lˈɛft."
+	},
+	{
+		"id": "EN11",
+		"lid": "en-us",
+		"src": "Stop; wait: now, then.",
+		"raw": "stˈɑːp; wˈeɪt: nˈaʊ, ðˈɛn.",
+		"clean": "stˈɑːp; wˈeɪt: nˈaʊ, ðˈɛn."
+	},
+	{
+		"id": "EN12",
+		"lid": "en-us",
+		"src": "What???? No!!!! Ready!? Done?!",
+		"raw": "wˈʌt???? nˈoʊ!!!! ɹˈɛdi!? dˈʌn?!",
+		"clean": "wˈʌt? nˈoʊ! ɹˈɛdi? dˈʌn?"
+	},
+	{
+		"id": "EN13",
+		"lid": "en-us",
+		"src": "“Yes,” she said, \"no,\" and ‟maybe.\"",
+		"raw": "“jˈɛs,” ʃiː sˈɛd, \"nˈoʊ,\" ænd mˈeɪbiː.\"",
+		"clean": "jˈɛs, ʃiː sˈɛd, nˈoʊ, ænd mˈeɪbiː."
+	},
+	{
+		"id": "EN14",
+		"lid": "en-us",
+		"src": "Is it pretty because the women went to the city?",
+		"raw": "ɪz ɪt pɹˈɪɾi bɪkˈʌz ðə wˈɪmɪn wɛnt tə ðə sˈɪɾi?",
+		"clean": "ɪz ɪt pɹˈɪɾi bɪkˈʌz ðə wˈɪmɪn wɛnt tə ðə sˈɪɾi?"
+	},
+	{
+		"id": "EN15",
+		"lid": "en-us",
+		"src": "Love—a temporary confluence (really): \"yes\"—no…",
+		"raw": "lˈʌv—ɐ tˈɛmpɚɹˌɛɹi kˈɑːnfluːəns (ɹˈiəli): \"jˈɛs\"—nˈoʊ…",
+		"clean": "lˈʌv—ɐ tˈɛmpɚɹˌɛɹi kˈɑːnfluːəns, ɹˈiəli, : jˈɛs—nˈoʊ…"
+	},
+	{
+		"id": "RU01",
+		"lid": "ru",
+		"src": "«Ну что?!» — сказала она (тихо)… “ладно”, 11₽ и 3-7, не 2.5e3.",
+		"raw": "«nˈu ʃto?!» — skazˈɑɭa ˈona (tʲˈixʌ)… “ɭˈɑdnʌ”, ɔdʲˈinnʌttsʌtʲ i trʲˈi sʲˈejm, ne dvˈɑ.pʲˈjatʲ ˈiː trʲˈi.",
+		"clean": "nˈu ʃto?—skazˈɑɭa ˈona, tʲˈixʌ, … ɭˈɑdnʌ, ɔdʲˈinnʌttsʌtʲ rˈubɭij i trʲˈi dˈo sʲˈejm, ne dvˈɑ tˈotʃʲka pʲˈjatʲ umnʌʒˈytʲ na dʲisʲˈɑtʲ f sʲtʲipʲˈenɪ trʲˈi."
+	},
+	{
+		"id": "RU02",
+		"lid": "ru",
+		"src": "Это (конечно) так?! Нет!!",
+		"raw": "ˈɛtʌ (kʌnˈeʃnʌ) tˈɑk?! nˈet!!",
+		"clean": "ˈɛtʌ, kʌnˈeʃnʌ, tˈɑk? nˈet!"
+	},
+	{
+		"id": "RU03",
+		"lid": "ru",
+		"src": "Дай 1₽, 2₽, 5₽, 11₽, 21₽, 22₽ и 1.5₽.",
+		"raw": "dˈɑj ojdʲˈin, dvˈɑ, pʲˈjatʲ, ɔdʲˈinnʌttsʌtʲ, dvˈɑttsʌtʲojdʲˈin, dvˈɑttsatʲdvˈɑ i ojdʲˈin.pʲˈjatʲ.",
+		"clean": "dˈɑj ojdʲˈin rˈubɭ, dvˈɑ rˈubɭʌ, pʲˈjatʲ rˈubɭij, ɔdʲˈinnʌttsʌtʲ rˈubɭij, dvˈɑttsʌtʲojdʲˈin rˈubɭ, dvˈɑttsatʲdvˈɑ rˈubɭʌ i ojdʲˈin tˈotʃʲka pʲˈjatʲ rˈubɭ."
+	},
+	{
+		"id": "RU04",
+		"lid": "ru",
+		"src": "Мерцание звёзд—это сердцебиение Вселенной.",
+		"raw": "mʲirtsˈɑnijɪ zvʲˈɵst—ˈɛtʌ sʲirdtsybʲˈijinijɪ fsʲiɭˈennʌj.",
+		"clean": "mʲirtsˈɑnijɪ zvʲˈɵst—ˈɛtʌ sʲirdtsybʲˈijinijɪ fsʲiɭˈennʌj."
+	},
+	{
+		"id": "RU05",
+		"lid": "ru",
+		"src": "Тонкий серп луны похож на чей-то загадочный прищуренный древний глаз. Он молчаливо наблюдает за нашими смешными суетливыми ночными земными делами. Лунный свет обнажает скрытые инстинкты: которые আমরা тщательно прячем днем.",
+		"raw": "tˈonkʲij sʲˈerp ɭˈuny pˈoxʌʃ na tʃʲˈejtˈo zʌɡadˈotʃʲnyj prʲiɕurʲˈennyj drʲˈevnij ɡɭˈɑs. ˈon mʌɭtʃʲˈɑɭivʌ nʌbɭu\"dˈɑjit zˈɑ naʃˈymʲɪ smʲiʃnˈymʲɪ sujitɭˈivymʲɪ nʌtʃʲnˈymʲɪ ʑimnˈymʲɪ dʲiɭˈɑmʲɪ. ɭˈunnyj svʲˈet ʌbnaʒˈɑjit skrytˈyjɪ ɪnsʲtʲˈinkty: kʌtˈoryjɪ ˌamɔɾˌa tɕatʲˈeɭnʌ prʲˈɑtʃʲim dnˈem.",
+		"clean": "tˈonkʲij sʲˈerp ɭˈuny pˈoxʌʃ na tʃʲˈejtˈo zʌɡadˈotʃʲnyj prʲiɕurʲˈennyj drʲˈevnij ɡɭˈɑs. ˈon mʌɭtʃʲˈɑɭivʌ nʌbɭu\"dˈɑjit zˈɑ naʃˈymʲɪ smʲiʃnˈymʲɪ sujitɭˈivymʲɪ nʌtʃʲnˈymʲɪ ʑimnˈymʲɪ dʲiɭˈɑmʲɪ. ɭˈunnyj svʲˈet ʌbnaʒˈɑjit skrytˈyjɪ ɪnsʲtʲˈinkty: kʌtˈoryjɪ ˌamɔɾˌa tɕatʲˈeɭnʌ prʲˈɑtʃʲim dnˈem."
+	},
+	{
+		"id": "RU06",
+		"lid": "ru",
+		"src": "Москва сказала OK, hello, мир.",
+		"raw": "mˈoskva skazˈɑɭa ˈəʊ kˈeɪ, həlˈəʊ, mʲˈir.",
+		"clean": "mˈoskva skazˈɑɭa ˈəʊ kˈeɪ, həlˈəʊ, mʲˈir."
+	},
+	{
+		"id": "JA01",
+		"lid": "ja",
+		"src": "本当に、「待って…」と（静かに）言ったんです——やっぱり100％?! ３-５円。",
+		"raw": "ho↑ntoːȵi,[ ma↓t̚te…] tʰ o( ɕi↓zɯkaȵi) i↑t̚ta n↓desɯ̥---- ja↑p̚pa↓ɾi ça↑kɯ̥paːse↓nto?! sa↑N- go↓eN.",
+		"clean": "ho↑ntoːȵi,[ ma↓t̚te…] tʰ o( ɕi↓zɯkaȵi) i↑t̚ta n↓desɯ̥---- ja↑p̚pa↓ɾi ça↑kɯ̥paːse↓nto? sa↑N kʰe↑eːːaːɾɯeː go↓eN."
+	},
+	{
+		"id": "JA02",
+		"lid": "ja",
+		"src": "本当ですか？ そうである。",
+		"raw": "ho↑ntoːde↓sɯ̥ka? so↑odeaɾɯ.",
+		"clean": "ho↑ntoːde↓sɯ̥ka? so↑odeaɾɯ."
+	},
+	{
+		"id": "JA03",
+		"lid": "ja",
+		"src": "「待って！」と『彼女』は言った。",
+		"raw": "[ ma↓t̚te!] tʰ o{ kʰa↓nodʑo} w a i↑t̚ta.",
+		"clean": "[ ma↓t̚te!] tʰ o{ kʰa↓nodʑo} w a i↑t̚ta."
+	},
+	{
+		"id": "JA04",
+		"lid": "ja",
+		"src": "やっぱり日本へ行ったんです。100％です！",
+		"raw": "ja↑p̚pa↓ɾi ȵi↑p̚po↓Ne i↑t̚ta n↓desɯ̥. ça↑kɯ̥paːse↓ntodesɯ̥!",
+		"clean": "ja↑p̚pa↓ɾi ȵi↑p̚po↓Ne i↑t̚ta n↓desɯ̥. ça↑kɯ̥paːse↓ntodesɯ̥!"
+	},
+	{
+		"id": "JA05",
+		"lid": "ja",
+		"src": "散歩と天気とこんにちはと本当とあんみつ。",
+		"raw": "sa↑mpoto tʰe↓ŋki̥to kʰo↑nȵitɕiwato ho↑ntoːto a↑mmitsɯ.",
+		"clean": "sa↑mpoto tʰe↓ŋki̥to kʰo↑nȵitɕiwato ho↑ntoːto a↑mmitsɯ."
+	},
+	{
+		"id": "JA06",
+		"lid": "ja",
+		"src": "それは $5 と ¥100 です。",
+		"raw": "so↑ɾewa$ g o tʰ oY= ça↑kɯ de↓sɯ̥.",
+		"clean": "so↑ɾewa g o di↑ioːaːɾɯjɯːto ça↑kɯ i↑ienɯdesɯ̥."
+	},
+	{
+		"id": "JA07",
+		"lid": "ja",
+		"src": "OK、分かった。",
+		"raw": "o↓okei, wa↑ka↓t̚ta.",
+		"clean": "o↓okei, wa↑ka↓t̚ta."
+	},
+	{
+		"id": "XX-DE",
+		"lid": "de",
+		"src": "Guten Tag, wie geht es Ihnen?",
+		"raw": "Guten Tag, wie geht es Ihnen?",
+		"clean": "Guten Tag, wie geht es Ihnen?"
+	},
+	{
+		"id": "XX-FR",
+		"lid": "fr",
+		"src": "Bonjour, comment allez-vous?",
+		"raw": "Bonjour, comment allez-vous?",
+		"clean": "Bonjour, comment allez-vous?"
+	},
+	{
+		"id": "XX-ES",
+		"lid": "es",
+		"src": "¡Hola! ¿Cómo estás?",
+		"raw": "¡Hola! ¿Cómo estás?",
+		"clean": "¡Hola! ¿Cómo estás?"
+	},
+	{
+		"id": "XX-ZH",
+		"lid": "zh",
+		"src": "你好，世界。",
+		"raw": "你好，世界。",
+		"clean": "你好，世界。"
+	},
+	{
+		"id": "XX-BN",
+		"lid": "bn",
+		"src": "আমরা যাচ্ছি।",
+		"raw": "আমরা যাচ্ছি।",
+		"clean": "আমরা যাচ্ছি।"
+	}
+]

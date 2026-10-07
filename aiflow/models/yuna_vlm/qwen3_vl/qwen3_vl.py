@@ -11,10 +11,8 @@ def masked_scatter(final_embedding, image_mask_expanded, scaled_image_features):
 	scaled_image_features_flattened = mx.flatten(scaled_image_features)
 	final_embedding_flattened = mx.flatten(final_embedding)
 	image_mask_expanded_flattened = mx.flatten(image_mask_expanded)
-
 	image_positions = mx.array(np.where(image_mask_expanded_flattened)[0], mx.uint32)
 	final_embedding_flattened[image_positions] = scaled_image_features_flattened
-
 	final_embedding = mx.reshape(final_embedding_flattened, final_embedding_shape)
 	return final_embedding
 
@@ -36,15 +34,11 @@ class Model(nn.Module):
 
 		dtype = self.vision_tower.patch_embed.proj.weight.dtype
 		pixel_values = pixel_values.astype(dtype)
-
 		inputs_embeds = self.language_model.model.embed_tokens(input_ids)
 		hidden_states, deepstack_image_embeds = self.vision_tower(pixel_values, grid_thw)
-
 		inputs_embeds, image_mask = self.merge_input_ids_with_image_features(hidden_states, inputs_embeds, input_ids, self.config.image_token_index, self.config.video_token_index)
-
 		visual_pos_masks = image_mask[..., 0]
 		deepstack_visual_embeds = deepstack_image_embeds
-
 		return {"inputs_embeds": inputs_embeds, "visual_pos_masks": visual_pos_masks, "deepstack_visual_embeds": deepstack_visual_embeds}
 
 	@staticmethod
@@ -55,7 +49,6 @@ class Model(nn.Module):
 		n_image_tokens = special_image_mask.sum()
 		special_image_mask = special_image_mask[..., None]
 		special_image_mask = mx.broadcast_to(special_image_mask, inputs_embeds.shape)
-
 		n_image_features = image_features.shape[0]
 		n_image_mask_elements = special_image_mask.sum()
 

@@ -2,7 +2,8 @@ import inspect
 
 
 class AudioEncoderConfig:
-	def __init__(self, num_mel_bins=128, encoder_layers=24, encoder_attention_heads=16, encoder_ffn_dim=4096, d_model=1024, dropout=0.0, attention_dropout=0.0, activation_function="gelu", activation_dropout=0.0, scale_embedding=False, initializer_range=0.02, max_source_positions=1500, n_window=50, output_dim=2048, n_window_infer=800, conv_chunksize=500, downsample_hidden_size=480):
+	def __init__(self, num_mel_bins=128, encoder_layers=24, encoder_attention_heads=16, encoder_ffn_dim=4096, d_model=1024, dropout=0.0, attention_dropout=0.0, activation_function="gelu", activation_dropout=0.0, scale_embedding=False, initializer_range=0.02, max_source_positions=1500, max_position_embeddings=None, n_window=50, output_dim=2048, n_window_infer=800, conv_chunksize=500, downsample_hidden_size=480, model_type="qwen3_asr_encoder", num_key_value_heads=None):
+		self.model_type = model_type
 		self.num_mel_bins = num_mel_bins
 		self.encoder_layers = encoder_layers
 		self.encoder_attention_heads = encoder_attention_heads
@@ -14,16 +15,26 @@ class AudioEncoderConfig:
 		self.activation_dropout = activation_dropout
 		self.scale_embedding = scale_embedding
 		self.initializer_range = initializer_range
-		self.max_source_positions = max_source_positions
+		if max_position_embeddings is not None and max_source_positions == 1500 and int(max_position_embeddings) >= 256:  # HF 5.13: max_position_embeddings may be per-chunk post-CNN len (e.g. 13); ≥256 means real encoder seq cap (override default 1500)
+			self.max_source_positions = int(max_position_embeddings)
+		else:
+			self.max_source_positions = int(max_source_positions)
 		self.n_window = n_window
 		self.output_dim = output_dim
 		self.n_window_infer = n_window_infer
 		self.conv_chunksize = conv_chunksize
 		self.downsample_hidden_size = downsample_hidden_size
+		self.num_key_value_heads = num_key_value_heads or encoder_attention_heads
 
 	@classmethod
 	def from_dict(cls, params):
+		params = dict(params or {})
+		if "max_source_positions" not in params and "max_position_embeddings" in params and int(params["max_position_embeddings"]) >= 256:
+			params["max_source_positions"] = params["max_position_embeddings"]
 		return cls(**{k: v for k, v in params.items() if k in inspect.signature(cls).parameters})
+
+
+AudioConfig = AudioEncoderConfig  # AVLM alias
 
 
 class TextConfig:
@@ -77,12 +88,6 @@ class ModelConfig:
 
 	@classmethod
 	def from_dict(cls, params):
-		if "thinker_config" in params:
-			thinker = params.get("thinker_config", {})
-			if thinker.get("model_type") == "qwen3_forced_aligner":
-				from .qwen3_forced_aligner import ForcedAlignerConfig
-				return ForcedAlignerConfig.from_dict(params)
-
 		params = params.copy()
 
 		if "thinker_config" in params:
@@ -122,9 +127,3 @@ class STTOutput:
 		self.prompt_tps = prompt_tps
 		self.generation_tps = generation_tps
 		self.total_time = total_time
-
-
-class BaseModelArgs:
-	@classmethod
-	def from_dict(cls, params):
-		return cls(**{k: v for k, v in params.items() if k in inspect.signature(cls).parameters})
